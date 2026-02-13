@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic-settings
+livekit-api
+livekit-agents
+livekit-plugins-cartesia
+livekit-plugins-deepgram
+livekit-plugins-openai
+livekit-plugins-silero
+livekit-plugins-turn-detector
+openai
+redis
+requests
+openpyxl

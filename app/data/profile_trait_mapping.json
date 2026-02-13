@@ -1,0 +1,266 @@
+{
+  "The Disruptor": {
+    "gender": "masculine",
+    "traits": [
+      "adventurous",
+      "classic",
+      "innovative"
+    ],
+    "top_notes": [
+      "Neroli",
+      "Citron",
+      "Poivre noir",
+      "Neroli",
+      "Menthe"
+    ],
+    "heart_notes": [
+      "Violette",
+      "Lavande"
+    ],
+    "base_notes": [
+      "Cuir",
+      "Accord tabac",
+      "Labdanum",
+      "Patchouli",
+      "Accord musc"
+    ],
+    "examples": []
+  },
+  "The Visionary": {
+    "gender": "unisex",
+    "traits": [
+      "crisp",
+      "determined",
+      "forward-thinking",
+      "sharp",
+      "smoky",
+      "soft"
+    ],
+    "top_notes": [
+      "Cardamome",
+      "Note thé",
+      "Baie rose"
+    ],
+    "heart_notes": [
+      "Violette",
+      "iri"
+    ],
+    "base_notes": [
+      "Santal",
+      "Patchouli",
+      "Accord cuir",
+      "tabac gris"
+    ],
+    "examples": [
+      "Le Labo Santal 33"
+    ]
+  },
+  "The Trailblazer": {
+    "gender": "unisex",
+    "traits": [
+      "bright",
+      "citrus",
+      "clean",
+      "deep",
+      "floral",
+      "fresh",
+      "ready",
+      "sharp",
+      "subtle"
+    ],
+    "top_notes": [
+      "Bergamote",
+      "Citron",
+      "Mandarine"
+    ],
+    "heart_notes": [
+      "fleur d’oranger",
+      "Lavande fine",
+      "calone dhm"
+    ],
+    "base_notes": [
+      "Vetiver",
+      "Ambrette",
+      "Accord musqué blanc",
+      "Vanille legére"
+    ],
+    "examples": [
+      "CK1"
+    ]
+  },
+  "The Strategist": {
+    "gender": "masculine",
+    "traits": [
+      "assured",
+      "calming",
+      "deep",
+      "patient",
+      "soft",
+      "spiced",
+      "thoughtful",
+      "warm"
+    ],
+    "top_notes": [
+      "Néroli",
+      "Coriandre",
+      "Bergamote",
+      "Baie rose",
+      "Encens"
+    ],
+    "heart_notes": [
+      "Sauge",
+      "Lavande"
+    ],
+    "base_notes": [
+      "Cédre",
+      "Tonka",
+      "Patchouli",
+      "Vetiver"
+    ],
+    "examples": [
+      "Acqua Di Parma Colonia"
+    ]
+  },
+  "The Innovator": {
+    "gender": "masculine",
+    "traits": [
+      "adventurous",
+      "assured",
+      "fresh",
+      "grounded"
+    ],
+    "top_notes": [
+      "Pamplemousse",
+      "Orange",
+      "Poivre",
+      "Baie rose",
+      "Encens"
+    ],
+    "heart_notes": [
+      "Gingembre",
+      "Géranium"
+    ],
+    "base_notes": [
+      "Ambrox",
+      "Santal",
+      "Vétiver"
+    ],
+    "examples": [
+      "Bleu de Chanel"
+    ]
+  },
+  "The Creator": {
+    "gender": "feminine",
+    "traits": [
+      "authentic",
+      "citrus",
+      "creative",
+      "eccentric",
+      "floral",
+      "joyful",
+      "pepper",
+      "woody"
+    ],
+    "top_notes": [
+      "Bergamote",
+      "Baie rose",
+      "Mandarine",
+      "Encens",
+      "Cassis"
+    ],
+    "heart_notes": [
+      "Jasmin",
+      "Carotte",
+      "Accord magnolia",
+      "Lilas",
+      "violette"
+    ],
+    "base_notes": [
+      "Vétiver",
+      "Cashmeran",
+      "Cédre virginie",
+      "Note ambré"
+    ],
+    "examples": [
+      "Byredo Bal D’Afrique"
+    ]
+  },
+  "The Influencer": {
+    "gender": "feminine",
+    "traits": [
+      "confident",
+      "enthusiastic",
+      "explorer",
+      "fresh",
+      "trendsetter"
+    ],
+    "top_notes": [
+      "Bergamote",
+      "Baie rose",
+      "Accord fruité pomme confite"
+    ],
+    "heart_notes": [
+      "Accord pivoine",
+      "Rose",
+      "Accord thé"
+    ],
+    "base_notes": [
+      "Santal",
+      "Ambrette",
+      "Vanille",
+      "Benjoin",
+      "Tonka"
+    ],
+    "examples": [
+      "Miss Dior or even Merit Retrospect"
+    ]
+  },
+  "The Icon": {
+    "gender": "feminine",
+    "traits": [
+      "adventurous",
+      "classic",
+      "effortless",
+      "elegant",
+      "timeless",
+      "wise"
+    ],
+    "top_notes": [
+      "Effet propre ald",
+      "bergamote"
+    ],
+    "heart_notes": [
+      "Davana",
+      "osmanthus",
+      "rose jasmin",
+      "ylang ylang"
+    ],
+    "base_notes": [
+      "Patchouli",
+      "vanille",
+      "bois gaïac"
+    ],
+    "examples": [
+      "Chanel No 5 or more recently Tom Ford Black Orchid"
+    ]
+  },
+  "Cosy": {
+    "gender": "",
+    "traits": [],
+    "top_notes": [
+      "bambou",
+      "thé vert",
+      "citron"
+    ],
+    "heart_notes": [
+      "Lotus",
+      "cardamom"
+    ],
+    "base_notes": [
+      "Patchouli",
+      "vanille",
+      "musc"
+    ],
+    "examples": []
+  }
+}

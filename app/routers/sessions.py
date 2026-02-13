@@ -1,0 +1,121 @@
+from fastapi import APIRouter, HTTPException
+
+from app.models.schemas import (
+    AnswerRequest,
+    AnswerResponse,
+    SaveAnswerRequest,
+    SaveProfileRequest,
+    StartSessionRequest,
+    StartSessionResponse,
+)
+from app.services import formula_service, redis_service, session_service
+
+router = APIRouter(prefix="/api", tags=["sessions"])
+
+
+@router.post("/session/start", response_model=StartSessionResponse)
+async def start_session(body: StartSessionRequest):
+    result = session_service.create_session(
+        language=body.language,
+        voice_gender=body.voice_gender,
+        question_count=body.question_count,
+    )
+    return result
+
+
+@router.get("/session/{session_id}")
+async def get_session(session_id: str):
+    session = session_service.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@router.get("/session_list")
+async def session_list():
+    return session_service.list_session_ids()
+
+
+@router.post("/session/{session_id}/answer", response_model=AnswerResponse)
+async def answer(session_id: str, body: AnswerRequest):
+    result = session_service.submit_answer(session_id, body.text)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return result
+
+
+@router.post("/session/{session_id}/save-answer")
+async def save_answer(session_id: str, body: SaveAnswerRequest):
+    if not redis_service.is_profile_complete(session_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Profile incomplete, cannot save answers yet",
+        )
+    redis_service.save_answer(
+        session_id=session_id,
+        question_id=body.question_id,
+        question_text=body.question_text,
+        top_2=body.top_2,
+        bottom_2=body.bottom_2,
+    )
+    return {"status": "ok"}
+
+
+@router.get("/session/{session_id}/answers")
+async def get_answers(session_id: str):
+    data = redis_service.get_session_answers(session_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session not found in Redis")
+    return data
+
+
+@router.post("/session/{session_id}/save-profile")
+async def save_profile(session_id: str, body: SaveProfileRequest):
+    redis_service.save_user_profile(session_id, body.field, body.value)
+    complete = redis_service.is_profile_complete(session_id)
+    missing = redis_service.get_missing_profile_fields(session_id)
+    state = "questionnaire" if complete else "collecting_profile"
+    return {
+        "status": "ok",
+        "state": state,
+        "profile_complete": complete,
+        "missing_fields": missing,
+    }
+
+
+@router.get("/session/{session_id}/state")
+async def get_state(session_id: str):
+    state = redis_service.get_session_state(session_id)
+    complete = redis_service.is_profile_complete(session_id)
+    missing = redis_service.get_missing_profile_fields(session_id)
+    return {
+        "state": state,
+        "profile_complete": complete,
+        "missing_fields": missing,
+    }
+
+
+@router.get("/session/{session_id}/profile")
+async def get_profile(session_id: str):
+    profile = redis_service.get_user_profile(session_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+
+@router.post("/session/{session_id}/generate-formulas")
+async def generate_formulas(session_id: str):
+    if not redis_service.is_profile_complete(session_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Profile incomplete, cannot generate formulas",
+        )
+    result = formula_service.generate_formulas(session_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/sessions/all-answers")
+async def get_all_answers():
+    return redis_service.get_all_sessions()
