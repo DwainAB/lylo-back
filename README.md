@@ -1,4 +1,4 @@
-# Lilo Backend
+# Lylo Backend
 
 Backend de l'application Lilo pour Le Studio des Parfums — une experience de creation de parfum personnalisee guidee par un agent vocal IA.
 
