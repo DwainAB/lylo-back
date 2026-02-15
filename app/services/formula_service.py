@@ -12,6 +12,7 @@ import openpyxl
 
 from app.data.choice_profile_mapping import (
     CHOICE_PROFILE_MAPPING,
+    INGREDIENT_EN_TO_FR,
     PROFILE_DESCRIPTIONS,
     PROFILE_DESCRIPTIONS_EN,
     PROFILE_GENDERS,
@@ -266,6 +267,7 @@ def generate_formulas(session_id: str) -> dict:
     session_meta = redis_service.get_session_meta(session_id)
     language = session_meta.get("language", "fr") if session_meta else "fr"
     descriptions = PROFILE_DESCRIPTIONS_EN if language == "en" else PROFILE_DESCRIPTIONS
+    translate_name = (lambda name: INGREDIENT_EN_TO_FR.get(name, name)) if language == "fr" else (lambda name: name)
 
     profile = redis_service.get_user_profile(session_id)
     gender = profile.get("gender") if profile else None
@@ -294,18 +296,21 @@ def generate_formulas(session_id: str) -> dict:
     formulas = []
     for profile_name, score in top_profiles:
         ingredients = _get_ingredients_for_profile(profile_name, user_allergens)
+        # Traduire les noms d'ingrédients dans les détails
+        translated_details = {}
+        for note_key in ("top_notes", "heart_notes", "base_notes"):
+            translated_details[note_key] = [
+                {**n, "name": translate_name(n["name"])} for n in ingredients[note_key]
+            ]
+
         formulas.append({
             "profile": profile_name,
             "description": descriptions.get(profile_name, ""),
             "score": score,
-            "top_notes": [n["name"] for n in ingredients["top_notes"]],
-            "heart_notes": [n["name"] for n in ingredients["heart_notes"]],
-            "base_notes": [n["name"] for n in ingredients["base_notes"]],
-            "details": {
-                "top_notes": ingredients["top_notes"],
-                "heart_notes": ingredients["heart_notes"],
-                "base_notes": ingredients["base_notes"],
-            },
+            "top_notes": [n["name"] for n in translated_details["top_notes"]],
+            "heart_notes": [n["name"] for n in translated_details["heart_notes"]],
+            "base_notes": [n["name"] for n in translated_details["base_notes"]],
+            "details": translated_details,
         })
 
     return {"formulas": formulas}

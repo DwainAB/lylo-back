@@ -1,6 +1,6 @@
 import json
 
-import requests
+import httpx
 from dotenv import load_dotenv
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, function_tool
@@ -21,15 +21,16 @@ async def entrypoint(ctx: JobContext):
 
     session_id = ctx.room.name.replace("room_", "")
 
-    config = requests.get(
-        f"{settings.backend_url}/api/session/{session_id}"
-    ).json()
+    http = httpx.AsyncClient(base_url=settings.backend_url)
+
+    resp = await http.get(f"/api/session/{session_id}")
+    config = resp.json()
 
     print("Agent connected:", ctx.room.name)
 
     # Build question list for the LLM instructions
     questions_text = "\n".join(
-        f"- Question {i+1} (id={q['id']}): \"{q['question']}\" — Choix possibles: {', '.join(q['choices'])}"
+        f"- Question {i+1} (id={q['id']}): \"{q['question']}\" — Choix possibles: {', '.join(c['label'] if isinstance(c, dict) else c for c in q['choices'])}"
         for i, q in enumerate(config["questions"])
     )
 
@@ -49,8 +50,8 @@ async def entrypoint(ctx: JobContext):
     @function_tool()
     async def save_user_profile(field: str, value: str):
         """Sauvegarde une information du profil utilisateur (first_name, gender, age, has_allergies, allergies). Appelle cette fonction dès que l'utilisateur donne une information de profil."""
-        resp = requests.post(
-            f"{settings.backend_url}/api/session/{session_id}/save-profile",
+        resp = await http.post(
+            f"/api/session/{session_id}/save-profile",
             json={"field": field, "value": value},
         )
         data = resp.json()
@@ -73,8 +74,8 @@ async def entrypoint(ctx: JobContext):
     @function_tool()
     async def save_answer(question_id: int, question_text: str, top_2: list[str], bottom_2: list[str]):
         """Sauvegarde les choix de l'utilisateur pour une question. Appelle cette fonction UNIQUEMENT après confirmation de l'utilisateur, avec les 2 choix préférés (top_2) et les 2 choix les moins aimés (bottom_2). Ne sauvegarde PAS les justifications."""
-        resp = requests.post(
-            f"{settings.backend_url}/api/session/{session_id}/save-answer",
+        resp = await http.post(
+            f"/api/session/{session_id}/save-answer",
             json={
                 "question_id": question_id,
                 "question_text": question_text,
@@ -101,8 +102,8 @@ async def entrypoint(ctx: JobContext):
             "type": "state_change",
             "state": "generating_formulas",
         })
-        resp = requests.post(
-            f"{settings.backend_url}/api/session/{session_id}/generate-formulas"
+        resp = await http.post(
+            f"/api/session/{session_id}/generate-formulas"
         )
         if resp.status_code != 200:
             return f"Erreur: {resp.json().get('detail', 'Impossible de générer les formules')}"

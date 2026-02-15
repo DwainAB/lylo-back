@@ -6,16 +6,34 @@ import redis
 from app.config import get_settings
 
 
+_client: redis.Redis | None = None
+
+
 def _get_client() -> redis.Redis:
-    settings = get_settings()
-    return redis.from_url(settings.redis_url, decode_responses=True)
+    global _client
+    if _client is None:
+        settings = get_settings()
+        _client = redis.from_url(settings.redis_url, decode_responses=True)
+    return _client
 
 
-def save_session_meta(session_id: str, language: str, voice_gender: str) -> None:
+def save_session_meta(
+    session_id: str,
+    language: str,
+    voice_gender: str,
+    voice_id: str,
+    room_name: str,
+    questions: list,
+    agent_token: str,
+) -> None:
     r = _get_client()
     r.hset(f"session:{session_id}:meta", mapping={
         "language": language,
         "voice_gender": voice_gender,
+        "voice_id": voice_id,
+        "room_name": room_name,
+        "questions": json.dumps(questions),
+        "agent_token": agent_token,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     r.sadd("sessions:index", session_id)
@@ -24,7 +42,16 @@ def save_session_meta(session_id: str, language: str, voice_gender: str) -> None
 def get_session_meta(session_id: str) -> dict | None:
     r = _get_client()
     meta = r.hgetall(f"session:{session_id}:meta")
-    return meta if meta else None
+    if not meta:
+        return None
+    if "questions" in meta:
+        meta["questions"] = json.loads(meta["questions"])
+    return meta
+
+
+def list_session_ids() -> list[str]:
+    r = _get_client()
+    return list(r.smembers("sessions:index"))
 
 
 def save_answer(

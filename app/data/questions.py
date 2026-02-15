@@ -77,6 +77,41 @@ EN_TO_FR_CHOICES = {
     12: {"Understanding": "Comprendre", "Recognizing": "Reconnaitre", "Imagining": "Immaginer", "Escaping": "s'évader", "Questioning": "s'intérroger", "Wondering": "s'émmerveiller"},
 }
 
+# Mapping choix → fichier image (par question_id, indexé par position du choix)
+CHOICE_IMAGES = {
+    1: ["city.avif", "wood.webp", "campagne.webp", "montagne.webp", "desert.jpg", "plage.webp"],
+    2: ["newyork.webp", "athene.jpg", "delhi.jpg", "monsanto.webp", "pekin.jpg", "tombouctou.jpg"],
+    3: ["gastro.webp", "salade.jpg", "couscous.jpeg", "moleculaire.jpg", "steakhouse.jpg", "dessert.webp"],
+    4: ["sport.webp", "rencontre-population.jpg", "promenade-decouverte.jpg", "musée-art.jpg", "musique-bar-club.jpeg", "lecture-film.jpg"],
+    5: ["endurence.webp", "equipe.jpg", "precision.jpg", "aventure.jpeg", "musculation.jpg", "agrement.jpg"],
+    6: ["classique.jpg", "lyrique-chorale.jpg", "electronique-moderne.webp", "jazz-newedge.webp", "son-ailleur.jpeg", "rock.jpg"],
+    7: ["soie.jpg", "lin.jpg", "neige.jpg", "pierre.jpg", "bois.jpg", "ambre.jpg"],
+    8: ["fleurs.png", "plante-aromatiques.jpg", "plante-sauvage.webp", "PATCHOULI : VETIVER.webp", "mousse.jpg", "foin.png"],
+    9: ["leger.webp", "caractere.jpg", "vintage.jpeg", "chaud.webp", "frais.jpg", "moderne.webp"],
+    10: ["musc.jpg", "ambre.webp", "bois.gif", "gourmant.webp", "floral.jpg", "marin.jpg"],
+    11: ["marron-beige.jpg", "vert.jpg", "rouge.jpg", "bleu.webp", "jaune.jpg", "noir.jpg"],
+    12: ["comprendre.jpg", "reconnaitre.png", "imaginer.jpg", "evader.jpg", "interroger.png", "emerveiller.jpg"],
+}
+
+
+def _enrich_questions(questions: list) -> list:
+    """Ajoute l'URL d'image à chaque choix."""
+    enriched = []
+    for q in questions:
+        images = CHOICE_IMAGES.get(q["id"], [])
+        choices_with_images = []
+        for i, choice in enumerate(q["choices"]):
+            entry = {"label": choice}
+            if i < len(images):
+                entry["image"] = f"/static/choices/{q['id']}/{images[i]}"
+            choices_with_images.append(entry)
+        enriched.append({
+            **q,
+            "choices": choices_with_images,
+        })
+    return enriched
+
+
 QUESTIONS_FR = [
     {
         "id": 1,

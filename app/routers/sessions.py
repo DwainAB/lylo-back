@@ -1,8 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import (
-    AnswerRequest,
-    AnswerResponse,
     SaveAnswerRequest,
     SaveProfileRequest,
     StartSessionRequest,
@@ -34,14 +32,6 @@ async def get_session(session_id: str):
 @router.get("/session_list")
 async def session_list():
     return session_service.list_session_ids()
-
-
-@router.post("/session/{session_id}/answer", response_model=AnswerResponse)
-async def answer(session_id: str, body: AnswerRequest):
-    result = session_service.submit_answer(session_id, body.text)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return result
 
 
 @router.post("/session/{session_id}/save-answer")

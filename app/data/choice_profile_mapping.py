@@ -137,3 +137,40 @@ PROFILE_DESCRIPTIONS_EN = {
     "Icon": "Beyond classic, wise and always fashionable. Timeless, effortless and elegant.",
     "Cosy": "Soft, discreet, comforted by coziness. A bubble of well-being.",
 }
+
+# Traduction anglais → français des noms d'ingrédients (notes olfactives)
+INGREDIENT_EN_TO_FR = {
+    # TOP NOTES
+    "Grapefruit wood": "Bois de pamplemousse",
+    "Bamboo leaf": "Feuille de bambou",
+    "Warm spices": "Épices chaudes",
+    "Cold spices": "Épices froides",
+    "Blackcurrant": "Cassis",
+    "White dew": "Rosée blanche",
+    "Grasse's lavender": "Lavande de Grasse",
+    "Fresh bergamot": "Bergamote fraîche",
+    "Modern freshness": "Fraîcheur moderne",
+    "Wild rose": "Rose sauvage",
+    # HEART NOTES
+    "Rose & peony": "Rose & pivoine",
+    "Green lily of the valley": "Muguet vert",
+    "Jasmine blossom": "Fleur de jasmin",
+    "Fresh breeze": "Brise fraîche",
+    "Tutti fruitti-rhubarb": "Tutti frutti-rhubarbe",
+    "Neroli-orange blossom": "Néroli-fleur d'oranger",
+    "Fig tree": "Figuier",
+    "Powdery violet": "Violette poudrée",
+    "Floral honey": "Miel floral",
+    "Blond tobacco": "Tabac blond",
+    # BASE NOTES
+    "Sweet amber": "Ambre sucré",
+    "Iris powder": "Poudre d'iris",
+    "Sweet note": "Note sucrée",
+    "Woody bouquet": "Bouquet boisé",
+    "Woody harmony": "Harmonie boisée",
+    "White chypre": "Chypre blanc",
+    "Aldehyde harmony": "Harmonie aldéhydée",
+    "Powdery musk": "Musc poudré",
+    "Modern wood": "Bois moderne",
+    "Leather": "Cuir",
+}

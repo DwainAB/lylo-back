@@ -11,5 +11,5 @@ livekit-plugins-silero
 livekit-plugins-turn-detector
 openai
 redis
-requests
+httpx
 openpyxl
