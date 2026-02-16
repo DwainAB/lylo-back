@@ -108,13 +108,22 @@ REQUIRED_PROFILE_FIELDS = {"first_name", "gender", "age", "has_allergies"}
 def is_profile_complete(session_id: str) -> bool:
     r = _get_client()
     profile = r.hgetall(f"session:{session_id}:profile")
-    return REQUIRED_PROFILE_FIELDS.issubset(profile.keys())
+    if not REQUIRED_PROFILE_FIELDS.issubset(profile.keys()):
+        return False
+    # If user declared allergies, the actual allergies must also be provided
+    if profile.get("has_allergies", "").lower() in ("oui", "yes") and "allergies" not in profile:
+        return False
+    return True
 
 
 def get_missing_profile_fields(session_id: str) -> list[str]:
     r = _get_client()
     profile = r.hgetall(f"session:{session_id}:profile")
-    return list(REQUIRED_PROFILE_FIELDS - profile.keys())
+    missing = list(REQUIRED_PROFILE_FIELDS - profile.keys())
+    # If user declared allergies but hasn't specified them yet
+    if profile.get("has_allergies", "").lower() in ("oui", "yes") and "allergies" not in profile:
+        missing.append("allergies")
+    return missing
 
 
 def get_session_state(session_id: str) -> str:

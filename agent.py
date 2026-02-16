@@ -78,6 +78,20 @@ async def entrypoint(ctx: JobContext):
             return f"Profile updated: {field} = {value}"
         return f"Profil mis à jour: {field} = {value}"
 
+    # Notify the frontend of the user's 2 favorite choices so it can hide those cards
+    @function_tool()
+    async def notify_top_2(question_id: int, top_2: list[str]):
+        """Notifies the frontend of the user's 2 favorite choices for the current question. Call this IMMEDIATELY after identifying the 2 favorites, BEFORE asking for the least liked. / Notifie le frontend des 2 choix préférés de l'utilisateur. Appelle cette fonction IMMÉDIATEMENT après avoir identifié les 2 favoris, AVANT de demander les moins aimés."""
+        await send_state_update({
+            "type": "top_2_selected",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "top_2": top_2,
+        })
+        if is_en:
+            return f"Frontend notified: favorites for question {question_id} are {top_2}"
+        return f"Frontend notifié: favoris pour la question {question_id} sont {top_2}"
+
     # Define the save_answer tool for the LLM to call
     @function_tool()
     async def save_answer(question_id: int, question_text: str, top_2: list[str], bottom_2: list[str]):
@@ -182,19 +196,25 @@ For EACH question, follow these steps in order:
 
 **Step A — The 2 favorite choices:**
 1. Ask the question in a natural and engaging way, then ask the user for their **2 favorite choices** among the options.
-2. Once the 2 choices are identified, ask them curiously **why** they like the **first choice**. Listen to their justification and briefly respond naturally.
-3. Then ask them **why** they like the **second choice**. Same thing, listen and respond.
+2. Once the 2 choices are identified, IMMEDIATELY call `notify_top_2(question_id, top_2=[X, Y])` to notify the frontend (so it can hide those cards).
+3. Ask them curiously **why** they like the **first choice**. Listen to their justification and briefly respond naturally.
+4. Then ask them **why** they like the **second choice**. Same thing, listen and respond.
 
 **Step B — The 2 least liked choices:**
-4. Transition naturally, for example "And on the flip side, which 2 appeal to you the least?"
-5. Ask them **why** for the **first least liked choice**. Listen without judging, respond.
-6. Then **why** for the **second**. Same thing.
+5. Transition naturally, for example "And on the flip side, which 2 appeal to you the least?" The user must choose from the **remaining 4 choices only** (excluding their 2 favorites). NEVER accept a favorite as a least liked choice. If the user picks one of their favorites, point it out with humor, e.g. "Wait, you just told me you loved that one! You can only pick from the others."
+6. Ask them **why** for the **first least liked choice**. Listen without judging, respond.
+7. Then **why** for the **second**. Same thing.
 
-**Step C — Confirmation:**
-7. Summarize clearly but conversationally, for example "Alright, so to sum up: your favorites are [X] and [Y], and the ones that appeal to you least are [A] and [B]. Is that right?"
-8. If the user **confirms**: IMMEDIATELY call `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Justifications are NOT saved, they only serve to make the conversation lively and natural.
-9. If the user wants to **correct**: go back to the relevant step with kindness.
-10. Move on to the next question with a natural transition.
+**Step C — Confirmation (MANDATORY):**
+8. You MUST ALWAYS summarize before saving. Summarize clearly but conversationally, for example "Alright, so to sum up: your favorites are [X] and [Y], and the ones that appeal to you least are [A] and [B]. Is that right?"
+9. If the user **confirms**: IMMEDIATELY call `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Justifications are NOT saved, they only serve to make the conversation lively and natural.
+10. If the user wants to **modify choices**: handle it naturally. The user may say things like "I want to swap City for Beach", "Actually change my second favorite", "I want to change my choices", etc. When this happens:
+   - Acknowledge the change warmly, e.g. "No problem, let's fix that!"
+   - Update the relevant choice(s) based on what they say
+   - If a favorite is swapped, call `notify_top_2` again with the updated favorites
+   - Redo the summary with the corrected choices and ask for confirmation again
+   - NEVER save until the user confirms the final summary
+11. Move on to the next question with a natural transition.
 
 Questionnaire rules:
 - Ask ONE question at a time.
@@ -297,19 +317,25 @@ Pour CHAQUE question, suis ces étapes dans l'ordre:
 
 **Étape A — Les 2 choix préférés:**
 1. Posez la question de façon naturelle et engageante, puis demandez à l'utilisateur ses **2 choix préférés** parmi les options proposées.
-2. Une fois les 2 choix identifiés, demandez-lui avec curiosité **pourquoi** il aime le **premier choix**. Écoutez sa justification et rebondissez brièvement dessus de manière naturelle.
-3. Puis demandez-lui **pourquoi** il aime le **deuxième choix**. Pareil, écoutez et rebondissez.
+2. Une fois les 2 choix identifiés, appelez IMMÉDIATEMENT `notify_top_2(question_id, top_2=[X, Y])` pour notifier le frontend (afin qu'il puisse masquer ces cartes).
+3. Demandez-lui avec curiosité **pourquoi** il aime le **premier choix**. Écoutez sa justification et rebondissez brièvement dessus de manière naturelle.
+4. Puis demandez-lui **pourquoi** il aime le **deuxième choix**. Pareil, écoutez et rebondissez.
 
 **Étape B — Les 2 choix les moins aimés:**
-4. Enchaînez naturellement, par exemple "Et à l'inverse, quels sont les 2 qui vous attirent le moins ?"
-5. Demandez-lui **pourquoi** pour le **premier choix le moins aimé**. Écoutez sans juger, rebondissez.
-6. Puis **pourquoi** pour le **deuxième**. Pareil.
+5. Enchaînez naturellement, par exemple "Et à l'inverse, quels sont les 2 qui vous attirent le moins ?" L'utilisateur doit choisir parmi les **4 choix restants uniquement** (en excluant ses 2 favoris). N'acceptez JAMAIS un favori comme choix le moins aimé. Si l'utilisateur choisit un de ses favoris, relevez-le avec humour, ex : "Attendez, vous venez de me dire que vous adoriez celui-là ! Choisissez plutôt parmi les autres."
+6. Demandez-lui **pourquoi** pour le **premier choix le moins aimé**. Écoutez sans juger, rebondissez.
+7. Puis **pourquoi** pour le **deuxième**. Pareil.
 
-**Étape C — Confirmation:**
-7. Récapitulez clairement mais de manière conversationnelle, par exemple "D'accord, donc si je résume : vos coups de cœur c'est [X] et [Y], et ceux qui vous parlent le moins c'est [A] et [B]. C'est bien ça ?"
-8. Si l'utilisateur **confirme**: appelez IMMÉDIATEMENT `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Les justifications ne sont PAS sauvegardées, elles servent uniquement à rendre la conversation vivante et naturelle.
-9. Si l'utilisateur veut **corriger**: reprenez l'étape concernée avec bienveillance.
-10. Enchaînez sur la question suivante avec une transition naturelle.
+**Étape C — Confirmation (OBLIGATOIRE):**
+8. Vous DEVEZ TOUJOURS récapituler avant de sauvegarder. Récapitulez clairement mais de manière conversationnelle, par exemple "D'accord, donc si je résume : vos coups de cœur c'est [X] et [Y], et ceux qui vous parlent le moins c'est [A] et [B]. C'est bien ça ?"
+9. Si l'utilisateur **confirme**: appelez IMMÉDIATEMENT `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Les justifications ne sont PAS sauvegardées, elles servent uniquement à rendre la conversation vivante et naturelle.
+10. Si l'utilisateur veut **modifier ses choix**: gérez-le naturellement. L'utilisateur peut dire des choses comme "je veux remplacer la ville par plage", "change mon deuxième préféré", "je veux changer mes choix", etc. Dans ce cas :
+   - Accusez réception chaleureusement, ex : "Pas de souci, on corrige ça !"
+   - Mettez à jour le(s) choix concerné(s) selon ce qu'il dit
+   - Si un favori est changé, appelez à nouveau `notify_top_2` avec les favoris mis à jour
+   - Refaites le récapitulatif avec les choix corrigés et redemandez confirmation
+   - Ne sauvegardez JAMAIS tant que l'utilisateur n'a pas confirmé le récapitulatif final
+11. Enchaînez sur la question suivante avec une transition naturelle.
 
 Règles du questionnaire:
 - Posez UNE SEULE question à la fois.
@@ -362,7 +388,7 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
 
     agent = Agent(
         instructions=instructions,
-        tools=[save_user_profile, save_answer, generate_formulas],
+        tools=[save_user_profile, notify_top_2, save_answer, generate_formulas],
     )
 
     # Create agent session with STT + LLM + TTS pipeline
