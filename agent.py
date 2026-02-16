@@ -141,6 +141,61 @@ async def entrypoint(ctx: JobContext):
         })
         return json.dumps(data, ensure_ascii=False)
 
+    # Define the select_formula tool for the LLM to call when user picks a formula
+    @function_tool()
+    async def select_formula(formula_index: int):
+        """Saves the user's chosen formula (0 for first, 1 for second). Call when the user clearly chooses one of the 2 formulas. / Sauvegarde la formule choisie par l'utilisateur (0 pour la première, 1 pour la deuxième)."""
+        resp = await http.post(
+            f"/api/session/{session_id}/select-formula",
+            json={"formula_index": formula_index},
+        )
+        if resp.status_code != 200:
+            detail = resp.json().get('detail', 'Error selecting formula' if is_en else 'Erreur lors de la sélection')
+            return f"Error: {detail}" if is_en else f"Erreur: {detail}"
+        data = resp.json()
+        await send_state_update({
+            "type": "formula_selected",
+            "state": "customization",
+            "formula_index": formula_index,
+            "formula": data["formula"],
+        })
+        if is_en:
+            return f"Formula {formula_index + 1} selected. The user can now customize it."
+        return f"Formule {formula_index + 1} sélectionnée. L'utilisateur peut maintenant la personnaliser."
+
+    # Define the get_available_ingredients tool to list alternatives
+    @function_tool()
+    async def get_available_ingredients(note_type: str):
+        """Returns available ingredients for a note type (top, heart, or base), filtered by user allergies. Call this BEFORE suggesting a replacement to the user. / Retourne les ingrédients disponibles pour un type de note, filtrés par allergies."""
+        resp = await http.get(
+            f"/api/session/{session_id}/available-ingredients/{note_type}"
+        )
+        if resp.status_code != 200:
+            detail = resp.json().get('detail', 'Error' if is_en else 'Erreur')
+            return f"Error: {detail}" if is_en else f"Erreur: {detail}"
+        return json.dumps(resp.json(), ensure_ascii=False)
+
+    # Define the replace_note tool to swap a note in the selected formula
+    @function_tool()
+    async def replace_note(note_type: str, old_note: str, new_note: str):
+        """Replaces a note in the selected formula and recalculates ml for all sizes. Call ONLY after the user confirms the replacement. note_type must be 'top', 'heart', or 'base'. / Remplace une note dans la formule sélectionnée et recalcule les ml."""
+        resp = await http.post(
+            f"/api/session/{session_id}/replace-note",
+            json={"note_type": note_type, "old_note": old_note, "new_note": new_note},
+        )
+        if resp.status_code != 200:
+            detail = resp.json().get('detail', 'Error replacing note' if is_en else 'Erreur lors du remplacement')
+            return f"Error: {detail}" if is_en else f"Erreur: {detail}"
+        data = resp.json()
+        await send_state_update({
+            "type": "formula_updated",
+            "state": "customization",
+            "formula": data["formula"],
+        })
+        if is_en:
+            return f"Note replaced: {old_note} → {new_note}. Formula updated with new ml calculations."
+        return f"Note remplacée : {old_note} → {new_note}. Formule mise à jour avec les nouveaux calculs en ml."
+
     # Create agent with questionnaire instructions
     num_questions = len(config["questions"])
 
@@ -227,12 +282,39 @@ Questionnaire rules:
 
 --- PHASE 3: PRESENTING THE FORMULAS ---
 
-After calling `generate_formulas()`, you receive 2 formulas. For each one, present enthusiastically and naturally:
+After calling `generate_formulas()`, you receive 2 formulas. Each formula comes with 3 size options (10ml, 30ml, 50ml) that include precise ml quantities for each note and booster. For each formula, present enthusiastically and naturally:
 1. The profile name (e.g., "Your first formula is called The Influencer!")
 2. A short description of the profile in your own words
 3. The top, heart, and base notes in a poetic way (don't just read a list, describe the olfactory atmosphere)
+4. Mention that the formula is available in 3 sizes: 10ml, 30ml, and 50ml
 
-After presenting both formulas, ask the user which one they prefer or if they have questions. Conclude warmly by thanking them.
+You do NOT need to read out all the ml details — the frontend will display the detailed breakdown with exact quantities. Just mention the sizes exist and focus on describing the scent experience.
+
+After presenting both formulas, ask the user which one they prefer. The user MUST choose one of the 2 formulas. They can ask questions about the formulas before deciding, take your time to answer them. Once the user clearly states their choice, IMMEDIATELY call `select_formula(formula_index)` (0 for the first, 1 for the second). Then move to Phase 4.
+
+--- PHASE 4: FORMULA CUSTOMIZATION ---
+
+After the user selects a formula, you enter customization mode. The frontend now shows only the selected formula.
+
+In this phase, you are a perfumery expert helping the user personalize their formula. The user can:
+- Ask questions about any note in their formula (what does it smell like, why was it chosen, etc.)
+- Request to replace a note they don't like
+- Ask for recommendations and advice
+
+**When the user wants to replace a note:**
+1. Acknowledge their request warmly (e.g., "You'd like to swap out the rose? No problem, let me see what else would work beautifully!")
+2. IMMEDIATELY call `get_available_ingredients(note_type)` to get the list of available alternatives (note_type = "top", "heart", or "base" depending on which note they want to change)
+3. Based on the available ingredients, suggest 2-3 alternatives that would complement the rest of the formula. Explain WHY each would work well — describe the scent, the olfactory family, how it harmonizes with the other notes.
+4. Let the user choose. Once they confirm their choice, call `replace_note(note_type, old_note, new_note)` to apply the change.
+5. Confirm the change enthusiastically and briefly describe how the updated formula now feels.
+
+**Rules:**
+- ONLY suggest ingredients that are returned by `get_available_ingredients`. NEVER invent or suggest ingredients that aren't in the coffret.
+- Always call `get_available_ingredients` BEFORE suggesting alternatives. Don't guess from memory.
+- The user can make multiple replacements — there is no limit.
+- After each replacement, ask if they want to change anything else or if they're happy with their formula.
+- When the user is satisfied, conclude warmly. Thank them and let them know their personalized formula is ready.
+- Continue to detect contradictions and illogical statements with humor, as in previous phases.
 
 Conversation filters:
 - You can answer any questions related to perfumery (ingredients, olfactory families, top/heart/base notes, perfume history, advice, etc.).
@@ -348,12 +430,39 @@ Règles du questionnaire:
 
 --- PHASE 3 : PRÉSENTATION DES FORMULES ---
 
-Après avoir appelé `generate_formulas()`, tu reçois 2 formules. Pour chacune, présente de manière enthousiaste et naturelle:
+Après avoir appelé `generate_formulas()`, tu reçois 2 formules. Chaque formule est disponible en 3 formats (10ml, 30ml, 50ml) avec les quantités précises en ml pour chaque note et booster. Pour chacune, présente de manière enthousiaste et naturelle:
 1. Le nom du profil (ex: "Votre première formule s'appelle The Influencer !")
 2. Une courte description du profil en vos propres mots
 3. Les notes de tête, de cœur et de fond de manière poétique (ne lisez pas juste une liste, décrivez l'ambiance olfactive)
+4. Mentionnez que la formule est disponible en 3 formats : 10ml, 30ml et 50ml
 
-Après avoir présenté les 2 formules, demandez à l'utilisateur laquelle lui plaît le plus ou s'il a des questions. Concluez chaleureusement en le remerciant.
+Vous n'avez PAS besoin de lire tous les détails en ml — le frontend affichera le détail complet avec les quantités exactes. Mentionnez simplement les formats disponibles et concentrez-vous sur la description de l'expérience olfactive.
+
+Après avoir présenté les 2 formules, demandez à l'utilisateur laquelle il préfère. L'utilisateur DOIT choisir l'une des 2 formules. Il peut poser des questions sur les formules avant de décider, prenez le temps de lui répondre. Dès que l'utilisateur exprime clairement son choix, appelez IMMÉDIATEMENT `select_formula(formula_index)` (0 pour la première, 1 pour la deuxième). Passez ensuite à la Phase 4.
+
+--- PHASE 4 : PERSONNALISATION DE LA FORMULE ---
+
+Après la sélection, vous entrez en mode personnalisation. Le frontend n'affiche plus que la formule choisie.
+
+Dans cette phase, vous êtes un expert en parfumerie qui aide l'utilisateur à personnaliser sa formule. L'utilisateur peut :
+- Poser des questions sur n'importe quelle note de sa formule (à quoi ça sent, pourquoi elle a été choisie, etc.)
+- Demander à remplacer une note qu'il n'aime pas
+- Demander des recommandations et des conseils
+
+**Quand l'utilisateur veut remplacer une note :**
+1. Accueillez sa demande chaleureusement (ex : "Vous n'aimez pas la rose ? Pas de souci, je vais regarder ce qui irait parfaitement à la place !")
+2. Appelez IMMÉDIATEMENT `get_available_ingredients(note_type)` pour obtenir la liste des alternatives disponibles (note_type = "top", "heart" ou "base" selon la note à changer)
+3. En fonction des ingrédients disponibles, proposez 2-3 alternatives qui compléteraient bien le reste de la formule. Expliquez POURQUOI chacune fonctionnerait bien — décrivez le parfum, la famille olfactive, comment elle s'harmonise avec les autres notes.
+4. Laissez l'utilisateur choisir. Une fois qu'il confirme son choix, appelez `replace_note(note_type, old_note, new_note)` pour appliquer le changement.
+5. Confirmez le changement avec enthousiasme et décrivez brièvement comment la formule mise à jour se présente maintenant.
+
+**Règles :**
+- Proposez UNIQUEMENT des ingrédients retournés par `get_available_ingredients`. N'inventez JAMAIS et ne suggérez JAMAIS des ingrédients qui ne sont pas dans le coffret.
+- Appelez TOUJOURS `get_available_ingredients` AVANT de proposer des alternatives. Ne devinez pas de mémoire.
+- L'utilisateur peut faire plusieurs remplacements — il n'y a pas de limite.
+- Après chaque remplacement, demandez s'il souhaite modifier autre chose ou s'il est satisfait de sa formule.
+- Quand l'utilisateur est satisfait, concluez chaleureusement. Remerciez-le et dites-lui que sa formule personnalisée est prête.
+- Continuez à détecter les contradictions et les affirmations illogiques avec humour, comme dans les phases précédentes.
 
 Filtres de conversation:
 - Vous pouvez répondre à toutes les questions en rapport avec la parfumerie (ingrédients, familles olfactives, notes de tête/cœur/fond, histoire du parfum, conseils, etc.).
@@ -388,7 +497,8 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
 
     agent = Agent(
         instructions=instructions,
-        tools=[save_user_profile, notify_top_2, save_answer, generate_formulas],
+        tools=[save_user_profile, notify_top_2, save_answer, generate_formulas,
+               select_formula, get_available_ingredients, replace_note],
     )
 
     # Create agent session with STT + LLM + TTS pipeline

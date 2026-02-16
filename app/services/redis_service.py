@@ -132,6 +132,32 @@ def get_session_state(session_id: str) -> str:
     return "collecting_profile"
 
 
+def save_selected_formula(session_id: str, formula_data: dict) -> None:
+    r = _get_client()
+    r.set(f"session:{session_id}:selected_formula", json.dumps(formula_data))
+
+
+def get_selected_formula(session_id: str) -> dict | None:
+    r = _get_client()
+    raw = r.get(f"session:{session_id}:selected_formula")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+def save_generated_formulas(session_id: str, formulas: list[dict]) -> None:
+    r = _get_client()
+    r.set(f"session:{session_id}:generated_formulas", json.dumps(formulas))
+
+
+def get_generated_formulas(session_id: str) -> list[dict] | None:
+    r = _get_client()
+    raw = r.get(f"session:{session_id}:generated_formulas")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
 def get_all_sessions() -> list[dict]:
     r = _get_client()
     session_ids = r.smembers("sessions:index")

@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import (
+    ReplaceNoteRequest,
     SaveAnswerRequest,
     SaveProfileRequest,
+    SelectFormulaRequest,
     StartSessionRequest,
     StartSessionResponse,
 )
@@ -101,6 +103,32 @@ async def generate_formulas(session_id: str):
             detail="Profile incomplete, cannot generate formulas",
         )
     result = formula_service.generate_formulas(session_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/session/{session_id}/select-formula")
+async def select_formula(session_id: str, body: SelectFormulaRequest):
+    result = formula_service.select_formula(session_id, body.formula_index)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/session/{session_id}/available-ingredients/{note_type}")
+async def available_ingredients(session_id: str, note_type: str):
+    result = formula_service.get_available_ingredients(session_id, note_type)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/session/{session_id}/replace-note")
+async def replace_note(session_id: str, body: ReplaceNoteRequest):
+    result = formula_service.replace_note(
+        session_id, body.note_type, body.old_note, body.new_note
+    )
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result

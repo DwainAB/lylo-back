@@ -27,3 +27,13 @@ class SaveAnswerRequest(BaseModel):
 class SaveProfileRequest(BaseModel):
     field: Literal["first_name", "gender", "age", "has_allergies", "allergies"]
     value: str
+
+
+class SelectFormulaRequest(BaseModel):
+    formula_index: int  # 0 ou 1
+
+
+class ReplaceNoteRequest(BaseModel):
+    note_type: Literal["top", "heart", "base"]
+    old_note: str
+    new_note: str
