@@ -283,14 +283,21 @@ def generate_formulas(session_id: str) -> dict:
     ranked = _score_profiles(session_data["answers"], gender)
 
     if len(ranked) < 2:
-        return {"error": "Pas assez de données pour générer des formules", "formulas": []}
+        return {"error": "Not enough data to generate formulas" if language == "en" else "Pas assez de données pour générer des formules", "formulas": []}
 
-    # Prendre les 2 meilleurs, en s'assurant qu'ils sont différents
+    # Prendre les 2 meilleurs, en s'assurant qu'ils ont des ingrédients
     top_profiles = []
     for profile_name, score in ranked:
         if len(top_profiles) >= 2:
             break
+        ingredients = _get_ingredients_for_profile(profile_name, user_allergens)
+        has_notes = any(ingredients[k] for k in ("top_notes", "heart_notes", "base_notes"))
+        if not has_notes:
+            continue
         top_profiles.append((profile_name, score))
+
+    if len(top_profiles) < 2:
+        return {"error": "Not enough profiles with ingredients to generate formulas" if language == "en" else "Pas assez de profils avec des ingrédients pour générer des formules", "formulas": []}
 
     # Générer les formules
     formulas = []

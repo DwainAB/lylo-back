@@ -1,3 +1,10 @@
 __pycache__
 *.pyc
+*.pyo
 .env
+.git
+.gitignore
+.DS_Store
+*.md
+.venv
+venv
