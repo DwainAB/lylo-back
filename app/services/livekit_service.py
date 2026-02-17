@@ -18,3 +18,21 @@ def create_token(identity: str, room: str) -> str:
     )
 
     return token.to_jwt()
+
+
+async def delete_room(room_name: str) -> bool:
+    """Delete a LiveKit room. Returns True if successful."""
+    settings = get_settings()
+    lkapi = api.LiveKitAPI(
+        settings.livekit_url,
+        settings.livekit_api_key,
+        settings.livekit_api_secret,
+    )
+    try:
+        await lkapi.room.delete_room(api.DeleteRoomRequest(room=room_name))
+        return True
+    except Exception as e:
+        print(f"Failed to delete LiveKit room {room_name}: {e}")
+        return False
+    finally:
+        await lkapi.aclose()

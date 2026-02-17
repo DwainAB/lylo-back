@@ -8,7 +8,7 @@ from app.models.schemas import (
     StartSessionRequest,
     StartSessionResponse,
 )
-from app.services import formula_service, redis_service, session_service
+from app.services import formula_service, livekit_service, redis_service, session_service
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -29,6 +29,17 @@ async def get_session(session_id: str):
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    meta = redis_service.get_session_meta(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    room_name = meta.get("room_name", f"room_{session_id}")
+    await livekit_service.delete_room(room_name)
+    redis_service.delete_session(session_id)
+    return {"status": "ok", "session_id": session_id}
 
 
 @router.get("/session_list")

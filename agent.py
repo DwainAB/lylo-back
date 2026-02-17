@@ -24,12 +24,22 @@ async def entrypoint(ctx: JobContext):
     http = httpx.AsyncClient(base_url=settings.backend_url)
 
     resp = await http.get(f"/api/session/{session_id}")
+    if resp.status_code != 200:
+        print(f"Session {session_id} not found (HTTP {resp.status_code}), agent exiting.")
+        await http.aclose()
+        return
+
     config = resp.json()
+
+    if "language" not in config or "questions" not in config:
+        print(f"Session {session_id} has incomplete data, agent exiting.")
+        await http.aclose()
+        return
 
     print("Agent connected:", ctx.room.name)
 
     # Build question list for the LLM instructions
-    is_en = config["language"] == "en"
+    is_en = config.get("language", "fr") == "en"
     if is_en:
         questions_text = "\n".join(
             f"- Question {i+1} (id={q['id']}): \"{q['question']}\" — Available choices: {', '.join(c['label'] if isinstance(c, dict) else c for c in q['choices'])}"
@@ -505,14 +515,14 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
     session = AgentSession(
         stt=deepgram.STT(
             model="nova-3",
-            language=config["language"],
+            language=config.get("language", "fr"),
         ),
         llm=openai.LLM(model="gpt-4.1-mini"),
         tts=cartesia.TTS(
             api_key=settings.cartesia_api_key,
             model="sonic-3",
             voice=config["voice_id"],
-            language=config["language"],
+            language=config.get("language", "fr"),
         ),
         vad=silero.VAD.load(
             min_speech_duration=0.3,
@@ -529,12 +539,19 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
     )
 
     # Start with the introduction phase (collect user profile before questionnaire)
-    if config["language"] == "fr":
+    if config.get("language", "fr") == "fr":
         greeting = f"Saluez l'utilisateur chaleureusement et simplement en le vouvoyant. Présentez-vous juste avec votre prénom ({ai_name}), sans mentionner Lilo, Le Studio des Parfums, ni que vous êtes une assistante vocale. Par exemple : 'Bonjour ! Moi c'est {ai_name}, enchantée ! Et vous, comment vous appelez-vous ?' Soyez naturel(le) et souriant(e)."
     else:
         greeting = f"Greet the user warmly and simply. Introduce yourself just with your first name ({ai_name}), without mentioning Lilo, Le Studio des Parfums, or that you are a voice assistant. For example: 'Hey, hi! I'm {ai_name}, nice to meet you! And what's your name?' Be natural and friendly."
 
     await session.generate_reply(instructions=greeting)
+
+    # Cleanup when the job shuts down (user disconnects or room closes)
+    async def _on_shutdown():
+        await http.aclose()
+        print(f"Agent session ended for room: {ctx.room.name}")
+
+    ctx.add_shutdown_callback(_on_shutdown)
 
 
 if __name__ == "__main__":

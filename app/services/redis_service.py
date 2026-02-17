@@ -17,6 +17,17 @@ def _get_client() -> redis.Redis:
     return _client
 
 
+SESSION_TTL_SECONDS = 3600  # 1 hour
+
+
+def _set_session_ttl(r: redis.Redis, session_id: str) -> None:
+    """Apply TTL to all keys belonging to a session."""
+    for suffix in ("meta", "answers", "profile", "generated_formulas", "selected_formula"):
+        key = f"session:{session_id}:{suffix}"
+        if r.exists(key):
+            r.expire(key, SESSION_TTL_SECONDS)
+
+
 def save_session_meta(
     session_id: str,
     language: str,
@@ -37,6 +48,7 @@ def save_session_meta(
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     r.sadd("sessions:index", session_id)
+    r.expire(f"session:{session_id}:meta", SESSION_TTL_SECONDS)
 
 
 def get_session_meta(session_id: str) -> dict | None:
@@ -68,6 +80,7 @@ def save_answer(
         "bottom_2": bottom_2,
         "answered_at": datetime.now(timezone.utc).isoformat(),
     }))
+    r.expire(f"session:{session_id}:answers", SESSION_TTL_SECONDS)
 
 
 def get_session_answers(session_id: str) -> dict | None:
@@ -92,6 +105,7 @@ def get_session_answers(session_id: str) -> dict | None:
 def save_user_profile(session_id: str, field: str, value: str) -> None:
     r = _get_client()
     r.hset(f"session:{session_id}:profile", field, value)
+    r.expire(f"session:{session_id}:profile", SESSION_TTL_SECONDS)
 
 
 def get_user_profile(session_id: str) -> dict | None:
@@ -135,6 +149,7 @@ def get_session_state(session_id: str) -> str:
 def save_selected_formula(session_id: str, formula_data: dict) -> None:
     r = _get_client()
     r.set(f"session:{session_id}:selected_formula", json.dumps(formula_data))
+    r.expire(f"session:{session_id}:selected_formula", SESSION_TTL_SECONDS)
 
 
 def get_selected_formula(session_id: str) -> dict | None:
@@ -148,6 +163,7 @@ def get_selected_formula(session_id: str) -> dict | None:
 def save_generated_formulas(session_id: str, formulas: list[dict]) -> None:
     r = _get_client()
     r.set(f"session:{session_id}:generated_formulas", json.dumps(formulas))
+    r.expire(f"session:{session_id}:generated_formulas", SESSION_TTL_SECONDS)
 
 
 def get_generated_formulas(session_id: str) -> list[dict] | None:
@@ -169,3 +185,18 @@ def get_all_sessions() -> list[dict]:
             results.append(data)
 
     return results
+
+
+def delete_session(session_id: str) -> bool:
+    """Delete all Redis keys for a session. Returns True if the session existed."""
+    r = _get_client()
+    keys = [
+        f"session:{session_id}:meta",
+        f"session:{session_id}:answers",
+        f"session:{session_id}:profile",
+        f"session:{session_id}:generated_formulas",
+        f"session:{session_id}:selected_formula",
+    ]
+    deleted = r.delete(*keys)
+    r.srem("sessions:index", session_id)
+    return deleted > 0
