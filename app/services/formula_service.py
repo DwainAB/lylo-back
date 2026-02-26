@@ -559,13 +559,6 @@ def select_formula(session_id: str, formula_index: int) -> dict:
     selected = formulas[formula_index]
     redis_service.save_selected_formula(session_id, selected)
 
-    internal_email = get_settings().internal_email
-    if internal_email:
-        try:
-            mail_service.send_mail(internal_email, session_id, selected)
-        except Exception as e:
-            print(f"[mail] Erreur lors de l'envoi interne : {e}")
-
     return {"formula": selected}
 
 

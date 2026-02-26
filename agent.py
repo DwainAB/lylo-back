@@ -22,7 +22,7 @@ async def entrypoint(ctx: JobContext):
 
     session_id = ctx.room.name.replace("room_", "")
 
-    http = httpx.AsyncClient(base_url=settings.backend_url)
+    http = httpx.AsyncClient(base_url=settings.backend_url, timeout=30.0)
 
     resp = await http.get(f"/api/session/{session_id}")
     if resp.status_code != 200:

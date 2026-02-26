@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.models.schemas import (
     ReplaceNoteRequest,
@@ -8,7 +8,8 @@ from app.models.schemas import (
     StartSessionRequest,
     StartSessionResponse,
 )
-from app.services import formula_service, livekit_service, redis_service, session_service
+from app.config import get_settings
+from app.services import formula_service, livekit_service, mail_service, redis_service, session_service
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -122,11 +123,23 @@ async def generate_formulas(session_id: str):
     return result
 
 
+def _send_formula_mail_bg(session_id: str, formula: dict) -> None:
+    internal_email = get_settings().internal_email
+    if internal_email:
+        try:
+            mail_service.send_mail(internal_email, session_id, formula)
+        except Exception as e:
+            print(f"[mail] Erreur lors de l'envoi interne : {e}")
+
+
 @router.post("/session/{session_id}/select-formula")
-async def select_formula(session_id: str, body: SelectFormulaRequest):
+async def select_formula(
+    session_id: str, body: SelectFormulaRequest, background_tasks: BackgroundTasks
+):
     result = formula_service.select_formula(session_id, body.formula_index)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
+    background_tasks.add_task(_send_formula_mail_bg, session_id, result["formula"])
     return result
 
 
