@@ -1,0 +1,1265 @@
+{
+  "version": "1.0",
+  "questions": {
+    "1": {
+      "label": "Which destination attracts you the most?",
+      "choices": {
+        "City": {
+          "notes": {
+            "Warm spices": 2,
+            "Modern freshness": 2,
+            "Rose & peony": 2,
+            "Jasmine blossom": 1,
+            "Sweet amber": 2,
+            "Woody harmony": 2,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1
+          },
+          "families": {
+            "Spicy": 1,
+            "Floral": 1,
+            "Ambery": 1
+          }
+        },
+        "Forest": {
+          "notes": {
+            "Bamboo leaf": 3,
+            "Grasse's lavender": 2,
+            "Woody bouquet": 3,
+            "Modern wood": 2,
+            "Blond tobacco": 2,
+            "White chypre": 1,
+            "Powdery violet": 1,
+            "Wild rose": 1
+          },
+          "families": {
+            "Woody": 2,
+            "Aromatic": 1
+          }
+        },
+        "Countryside": {
+          "notes": {
+            "Wild rose": 3,
+            "White dew": 2,
+            "Green lily of the valley": 2,
+            "Fig tree": 2,
+            "Sweet note": 1,
+            "Iris powder": 1,
+            "Powdery musk": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Mountain": {
+          "notes": {
+            "Cold spices": 3,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Modern wood": 2,
+            "Leather": 2,
+            "White chypre": 1,
+            "Bamboo leaf": 1
+          },
+          "families": {
+            "Woody": 1,
+            "Leather": 1
+          }
+        },
+        "Desert": {
+          "notes": {
+            "Warm spices": 2,
+            "Blackcurrant": 1,
+            "Sweet amber": 3,
+            "Iris powder": 2,
+            "Leather": 2,
+            "Woody bouquet": 1,
+            "Sweet note": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Leather": 1
+          }
+        },
+        "Beach": {
+          "notes": {
+            "Grapefruit wood": 3,
+            "Fresh bergamot": 2,
+            "Modern freshness": 3,
+            "Fresh breeze": 2,
+            "Sweet note": 1,
+            "Powdery musk": 1,
+            "Aldehyde harmony": 1,
+            "Wild rose": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Hesperidic": 2,
+            "Floral": 1
+          }
+        }
+      }
+    },
+    "2": {
+      "label": "Which city would you prefer to visit?",
+      "choices": {
+        "New York": {
+          "notes": {
+            "Warm spices": 2,
+            "Modern freshness": 2,
+            "Jasmine blossom": 2,
+            "Fresh breeze": 1,
+            "Sweet amber": 2,
+            "Woody harmony": 2,
+            "Leather": 1,
+            "Grasse's lavender": 1
+          },
+          "families": {
+            "Spicy": 1,
+            "Floral": 1
+          }
+        },
+        "Athens": {
+          "notes": {
+            "Wild rose": 2,
+            "White dew": 2,
+            "Rose & peony": 3,
+            "Jasmine blossom": 2,
+            "Sweet note": 1,
+            "Iris powder": 2,
+            "Powdery musk": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Delhi": {
+          "notes": {
+            "Warm spices": 3,
+            "Cold spices": 2,
+            "Sweet amber": 2,
+            "Iris powder": 2,
+            "Leather": 2,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Bamboo leaf": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Spicy": 2,
+            "Ambery": 1
+          }
+        },
+        "Monsanto": {
+          "notes": {
+            "Bamboo leaf": 2,
+            "Grasse's lavender": 2,
+            "Green lily of the valley": 2,
+            "Fig tree": 2,
+            "Sweet note": 1,
+            "Powdery violet": 1,
+            "Aldehyde harmony": 1,
+            "Cold spices": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Beijing": {
+          "notes": {
+            "Cold spices": 2,
+            "Fresh bergamot": 1,
+            "Tutti fruitti-rhubarb": 2,
+            "Neroli-orange blossom": 1,
+            "Modern wood": 2,
+            "White chypre": 2,
+            "Leather": 1,
+            "Wild rose": 1
+          },
+          "families": {
+            "Woody": 1,
+            "Floral": 1
+          }
+        },
+        "Timbuktu": {
+          "notes": {
+            "Blackcurrant": 1,
+            "Sweet amber": 3,
+            "Leather": 3,
+            "Iris powder": 2,
+            "Woody bouquet": 2,
+            "Blond tobacco": 1,
+            "Sweet note": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Leather": 1
+          }
+        }
+      }
+    },
+    "3": {
+      "label": "What kind of restaurant do you prefer?",
+      "choices": {
+        "Gourmet": {
+          "notes": {
+            "Sweet note": 3,
+            "Floral honey": 2,
+            "Tutti fruitti-rhubarb": 2,
+            "Neroli-orange blossom": 1,
+            "Sweet amber": 2,
+            "Iris powder": 1,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1
+          },
+          "families": {
+            "Balsamic": 2,
+            "Floral": 1
+          }
+        },
+        "Salad": {
+          "notes": {
+            "Bamboo leaf": 2,
+            "Green lily of the valley": 2,
+            "Fresh bergamot": 2,
+            "Modern freshness": 1,
+            "Fresh breeze": 2,
+            "Powdery violet": 1,
+            "Aldehyde harmony": 1,
+            "Warm spices": 1,
+            "Powdery musk": 1
+          },
+          "families": {
+            "Floral": 2,
+            "Hesperidic": 1
+          }
+        },
+        "Couscous": {
+          "notes": {
+            "Warm spices": 3,
+            "Cold spices": 2,
+            "Sweet amber": 1,
+            "Iris powder": 1,
+            "Leather": 1,
+            "Woody bouquet": 2,
+            "Blond tobacco": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Spicy": 2
+          }
+        },
+        "Molecular Cuisine": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Wild rose": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Floral": 1
+          }
+        },
+        "Steak House": {
+          "notes": {
+            "Warm spices": 1,
+            "Leather": 3,
+            "Blond tobacco": 2,
+            "Modern wood": 2,
+            "Sweet amber": 1,
+            "White chypre": 2,
+            "Iris powder": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Leather": 2,
+            "Woody": 1
+          }
+        },
+        "Dessert": {
+          "notes": {
+            "Sweet note": 3,
+            "Floral honey": 2,
+            "Tutti fruitti-rhubarb": 2,
+            "Neroli-orange blossom": 1,
+            "Sweet amber": 2,
+            "Powdery musk": 2,
+            "Iris powder": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Balsamic": 2,
+            "Floral": 1
+          }
+        }
+      }
+    },
+    "4": {
+      "label": "Which activity attracts you the most?",
+      "choices": {
+        "Sport": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Woody harmony": 2,
+            "Modern wood": 2,
+            "Powdery musk": 1,
+            "Wild rose": 1
+          },
+          "families": {
+            "Hesperidic": 1,
+            "Woody": 1
+          }
+        },
+        "Meeting locals": {
+          "notes": {
+            "Warm spices": 2,
+            "Wild rose": 1,
+            "Jasmine blossom": 2,
+            "Rose & peony": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 2,
+            "Leather": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Spicy": 1
+          }
+        },
+        "Discovery walk": {
+          "notes": {
+            "Bamboo leaf": 2,
+            "Grasse's lavender": 1,
+            "Green lily of the valley": 2,
+            "Fig tree": 2,
+            "Sweet note": 1,
+            "Powdery violet": 1,
+            "Aldehyde harmony": 1,
+            "Cold spices": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Museum and art": {
+          "notes": {
+            "Powdery violet": 2,
+            "Iris powder": 2,
+            "White chypre": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Leather": 1,
+            "Sweet amber": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Leather": 1
+          }
+        },
+        "Music/bar/club": {
+          "notes": {
+            "Modern freshness": 2,
+            "Grapefruit wood": 1,
+            "Sweet amber": 2,
+            "Leather": 2,
+            "Modern wood": 2,
+            "White chypre": 1,
+            "Powdery musk": 1,
+            "Wild rose": 1,
+            "Fresh breeze": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Ambery": 1,
+            "Woody": 1
+          }
+        },
+        "Reading/movies/beach": {
+          "notes": {
+            "Fresh breeze": 3,
+            "Modern freshness": 2,
+            "Grapefruit wood": 2,
+            "Fresh bergamot": 1,
+            "Powdery musk": 2,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Warm spices": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Hesperidic": 1
+          }
+        }
+      }
+    },
+    "5": {
+      "label": "Which sport do you prefer?",
+      "choices": {
+        "Endurance": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Woody harmony": 2,
+            "Modern wood": 1,
+            "Powdery musk": 1,
+            "Wild rose": 1
+          },
+          "families": {
+            "Hesperidic": 1
+          }
+        },
+        "Team": {
+          "notes": {
+            "Warm spices": 2,
+            "Wild rose": 1,
+            "Jasmine blossom": 2,
+            "Rose & peony": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 2,
+            "Leather": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Spicy": 1
+          }
+        },
+        "Precision": {
+          "notes": {
+            "Powdery violet": 2,
+            "Iris powder": 2,
+            "White chypre": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Leather": 1,
+            "Sweet amber": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Leather": 1
+          }
+        },
+        "Adventure": {
+          "notes": {
+            "Cold spices": 2,
+            "Modern wood": 3,
+            "Blond tobacco": 2,
+            "Leather": 2,
+            "White chypre": 1,
+            "Woody bouquet": 1,
+            "Sweet note": 1,
+            "Grasse's lavender": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2,
+            "Leather": 1
+          }
+        },
+        "Weightlifting": {
+          "notes": {
+            "Warm spices": 2,
+            "Sweet amber": 2,
+            "Leather": 2,
+            "Iris powder": 1,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Sweet note": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Spicy": 1,
+            "Ambery": 1
+          }
+        },
+        "Leisure": {
+          "notes": {
+            "Fresh breeze": 2,
+            "Fig tree": 2,
+            "Floral honey": 2,
+            "Powdery musk": 2,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Modern freshness": 1,
+            "Wild rose": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        }
+      }
+    },
+    "6": {
+      "label": "Which music inspires you the most?",
+      "choices": {
+        "Classical": {
+          "notes": {
+            "Powdery violet": 3,
+            "Iris powder": 2,
+            "White chypre": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Leather": 1,
+            "Sweet amber": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Floral": 2,
+            "Leather": 1
+          }
+        },
+        "Lyrical and choral": {
+          "notes": {
+            "Jasmine blossom": 3,
+            "Rose & peony": 3,
+            "Wild rose": 2,
+            "Floral honey": 2,
+            "Powdery musk": 2,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Electronic and modern": {
+          "notes": {
+            "Modern freshness": 3,
+            "Grapefruit wood": 2,
+            "Modern wood": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "White chypre": 1,
+            "Powdery musk": 1,
+            "Wild rose": 1,
+            "Fresh breeze": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Woody": 1,
+            "Ambery": 1
+          }
+        },
+        "Jazz and new age": {
+          "notes": {
+            "Blond tobacco": 2,
+            "Leather": 3,
+            "Sweet note": 1,
+            "White chypre": 2,
+            "Modern wood": 2,
+            "Powdery violet": 1,
+            "Iris powder": 1,
+            "Warm spices": 1,
+            "Modern freshness": 1
+          },
+          "families": {
+            "Leather": 2,
+            "Balsamic": 1
+          }
+        },
+        "World music": {
+          "notes": {
+            "Warm spices": 3,
+            "Cold spices": 2,
+            "Sweet amber": 2,
+            "Iris powder": 1,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Leather": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Spicy": 2,
+            "Ambery": 1
+          }
+        },
+        "Rock": {
+          "notes": {
+            "Leather": 3,
+            "Modern wood": 2,
+            "Blond tobacco": 2,
+            "White chypre": 2,
+            "Warm spices": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Leather": 2,
+            "Woody": 1
+          }
+        }
+      }
+    },
+    "7": {
+      "label": "Which material attracts you the most?",
+      "choices": {
+        "Silk": {
+          "notes": {
+            "Powdery violet": 3,
+            "Jasmine blossom": 2,
+            "Rose & peony": 2,
+            "Floral honey": 2,
+            "Powdery musk": 2,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1,
+            "Modern freshness": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Linen": {
+          "notes": {
+            "Bamboo leaf": 2,
+            "Green lily of the valley": 2,
+            "Fresh bergamot": 2,
+            "Modern freshness": 1,
+            "Fresh breeze": 2,
+            "Powdery violet": 1,
+            "Aldehyde harmony": 1,
+            "Warm spices": 1,
+            "Powdery musk": 1
+          },
+          "families": {
+            "Floral": 2,
+            "Hesperidic": 1
+          }
+        },
+        "Snow": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Cold spices": 1
+          },
+          "families": {
+            "Hesperidic": 1,
+            "Floral": 1
+          }
+        },
+        "Stone": {
+          "notes": {
+            "Cold spices": 1,
+            "Modern wood": 2,
+            "White chypre": 2,
+            "Iris powder": 2,
+            "Leather": 2,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 1,
+            "Leather": 1
+          }
+        },
+        "Wood": {
+          "notes": {
+            "Woody bouquet": 3,
+            "Woody harmony": 3,
+            "Modern wood": 2,
+            "Blond tobacco": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "White chypre": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2
+          }
+        },
+        "Warm amber": {
+          "notes": {
+            "Sweet amber": 3,
+            "Sweet note": 2,
+            "Floral honey": 2,
+            "Iris powder": 2,
+            "Powdery musk": 1,
+            "Woody bouquet": 1,
+            "Leather": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Balsamic": 1
+          }
+        }
+      }
+    },
+    "8": {
+      "label": "Which plant do you like the most?",
+      "choices": {
+        "Flowers": {
+          "notes": {
+            "Jasmine blossom": 3,
+            "Rose & peony": 3,
+            "Wild rose": 2,
+            "Powdery violet": 2,
+            "Floral honey": 2,
+            "Powdery musk": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Aromatic plants": {
+          "notes": {
+            "Grasse's lavender": 3,
+            "Warm spices": 2,
+            "Cold spices": 2,
+            "Bamboo leaf": 1,
+            "Jasmine blossom": 1,
+            "Sweet amber": 1,
+            "Iris powder": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Aromatic": 2,
+            "Spicy": 1
+          }
+        },
+        "Wild plants": {
+          "notes": {
+            "Green lily of the valley": 3,
+            "Wild rose": 2,
+            "Fig tree": 2,
+            "Fresh breeze": 1,
+            "Powdery violet": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Cold spices": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Patchouli and vetiver": {
+          "notes": {
+            "Modern wood": 3,
+            "Blond tobacco": 2,
+            "Leather": 2,
+            "White chypre": 2,
+            "Woody bouquet": 1,
+            "Sweet amber": 1,
+            "Iris powder": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2,
+            "Leather": 1
+          }
+        },
+        "Forest moss": {
+          "notes": {
+            "Woody bouquet": 3,
+            "Woody harmony": 2,
+            "Modern wood": 2,
+            "Blond tobacco": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "White chypre": 1,
+            "Fresh bergamot": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2
+          }
+        },
+        "Hay in the sun": {
+          "notes": {
+            "Sweet note": 3,
+            "Floral honey": 2,
+            "Powdery musk": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Sweet amber": 2,
+            "Iris powder": 1,
+            "Powdery violet": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Balsamic": 2,
+            "Floral": 1
+          }
+        }
+      }
+    },
+    "9": {
+      "label": "What type of perfume do you prefer?",
+      "choices": {
+        "Light": {
+          "notes": {
+            "Grapefruit wood": 3,
+            "Fresh bergamot": 2,
+            "Modern freshness": 3,
+            "Fresh breeze": 2,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Wild rose": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Hesperidic": 2,
+            "Floral": 1
+          }
+        },
+        "Bold": {
+          "notes": {
+            "Leather": 3,
+            "Blond tobacco": 2,
+            "Modern wood": 2,
+            "White chypre": 2,
+            "Warm spices": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Leather": 2,
+            "Woody": 1
+          }
+        },
+        "Vintage": {
+          "notes": {
+            "Powdery violet": 3,
+            "Iris powder": 2,
+            "White chypre": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Leather": 1,
+            "Sweet amber": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Floral": 2,
+            "Leather": 1
+          }
+        },
+        "Warm": {
+          "notes": {
+            "Sweet amber": 3,
+            "Sweet note": 2,
+            "Floral honey": 2,
+            "Warm spices": 2,
+            "Iris powder": 1,
+            "Powdery musk": 1,
+            "Woody bouquet": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Balsamic": 1
+          }
+        },
+        "Fresh": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Grapefruit wood": 2,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Wild rose": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Hesperidic": 2,
+            "Floral": 1
+          }
+        },
+        "Modern": {
+          "notes": {
+            "Modern wood": 3,
+            "Modern freshness": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "White chypre": 1,
+            "Grapefruit wood": 1,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1,
+            "Fresh breeze": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Woody": 1,
+            "Ambery": 1
+          }
+        }
+      }
+    },
+    "10": {
+      "label": "Which raw material attracts you the most?",
+      "choices": {
+        "Musk": {
+          "notes": {
+            "Powdery musk": 3,
+            "Powdery violet": 2,
+            "Floral honey": 1,
+            "Sweet note": 1,
+            "Jasmine blossom": 1,
+            "Rose & peony": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1,
+            "Modern freshness": 1
+          },
+          "families": {
+            "Floral": 1
+          }
+        },
+        "Amber": {
+          "notes": {
+            "Sweet amber": 3,
+            "Sweet note": 2,
+            "Floral honey": 2,
+            "Iris powder": 2,
+            "Powdery musk": 1,
+            "Woody bouquet": 1,
+            "Leather": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Balsamic": 1
+          }
+        },
+        "Wood": {
+          "notes": {
+            "Woody bouquet": 3,
+            "Woody harmony": 3,
+            "Modern wood": 2,
+            "Blond tobacco": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "White chypre": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2
+          }
+        },
+        "Gourmand": {
+          "notes": {
+            "Sweet note": 3,
+            "Floral honey": 2,
+            "Tutti fruitti-rhubarb": 2,
+            "Neroli-orange blossom": 1,
+            "Sweet amber": 2,
+            "Powdery musk": 2,
+            "Iris powder": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Balsamic": 2
+          }
+        },
+        "Floral": {
+          "notes": {
+            "Jasmine blossom": 3,
+            "Rose & peony": 3,
+            "Wild rose": 2,
+            "Powdery violet": 2,
+            "Floral honey": 2,
+            "Powdery musk": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Marine": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh breeze": 3,
+            "Fresh bergamot": 2,
+            "Grapefruit wood": 2,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Warm spices": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Hesperidic": 1,
+            "Floral": 1
+          }
+        }
+      }
+    },
+    "11": {
+      "label": "Which colors do you prefer?",
+      "choices": {
+        "Brown and beige": {
+          "notes": {
+            "Sweet amber": 3,
+            "Sweet note": 2,
+            "Leather": 2,
+            "Iris powder": 2,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Powdery musk": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Ambery": 2,
+            "Leather": 1
+          }
+        },
+        "Green": {
+          "notes": {
+            "Bamboo leaf": 3,
+            "Green lily of the valley": 2,
+            "Wild rose": 1,
+            "Fig tree": 2,
+            "Sweet note": 1,
+            "Powdery violet": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Red": {
+          "notes": {
+            "Rose & peony": 3,
+            "Wild rose": 2,
+            "Jasmine blossom": 2,
+            "Floral honey": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 1,
+            "Aldehyde harmony": 1,
+            "Grasse's lavender": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Blue": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh bergamot": 2,
+            "Fresh breeze": 2,
+            "Grapefruit wood": 2,
+            "Powdery musk": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Warm spices": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Hesperidic": 2,
+            "Floral": 1
+          }
+        },
+        "Yellow": {
+          "notes": {
+            "Neroli-orange blossom": 3,
+            "Tutti fruitti-rhubarb": 2,
+            "Sweet note": 2,
+            "Floral honey": 1,
+            "Sweet amber": 1,
+            "Powdery musk": 1,
+            "Iris powder": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Balsamic": 1
+          }
+        },
+        "Black": {
+          "notes": {
+            "Leather": 3,
+            "Blond tobacco": 2,
+            "Modern wood": 2,
+            "White chypre": 2,
+            "Sweet amber": 1,
+            "Powdery musk": 1,
+            "Woody bouquet": 1,
+            "Grasse's lavender": 1,
+            "Modern freshness": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Leather": 2,
+            "Woody": 1
+          }
+        }
+      }
+    },
+    "12": {
+      "label": "What type of art attracts you the most?",
+      "choices": {
+        "Understanding": {
+          "notes": {
+            "Powdery violet": 2,
+            "Iris powder": 2,
+            "White chypre": 2,
+            "Aldehyde harmony": 2,
+            "Modern wood": 1,
+            "Leather": 1,
+            "Sweet amber": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Leather": 1
+          }
+        },
+        "Recognizing": {
+          "notes": {
+            "Jasmine blossom": 2,
+            "Rose & peony": 2,
+            "Wild rose": 2,
+            "Powdery musk": 2,
+            "Floral honey": 1,
+            "Sweet note": 1,
+            "Aldehyde harmony": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Floral": 2
+          }
+        },
+        "Imagining": {
+          "notes": {
+            "Modern freshness": 3,
+            "Fresh breeze": 2,
+            "Modern wood": 2,
+            "Sweet amber": 1,
+            "Leather": 1,
+            "Grapefruit wood": 1,
+            "Powdery musk": 1,
+            "Grasse's lavender": 1,
+            "Rose & peony": 1
+          },
+          "families": {
+            "Floral": 1,
+            "Woody": 1
+          }
+        },
+        "Escaping": {
+          "notes": {
+            "Woody bouquet": 2,
+            "Woody harmony": 2,
+            "Blond tobacco": 2,
+            "Leather": 2,
+            "White chypre": 1,
+            "Modern wood": 1,
+            "Sweet note": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Woody": 2,
+            "Leather": 1
+          }
+        },
+        "Questioning": {
+          "notes": {
+            "Warm spices": 2,
+            "Cold spices": 2,
+            "Sweet amber": 1,
+            "Iris powder": 1,
+            "Woody bouquet": 1,
+            "Blond tobacco": 1,
+            "Leather": 1,
+            "Fresh bergamot": 1,
+            "Fresh breeze": 1
+          },
+          "families": {
+            "Spicy": 2,
+            "Ambery": 1
+          }
+        },
+        "Wondering": {
+          "notes": {
+            "Sweet note": 2,
+            "Floral honey": 2,
+            "Powdery musk": 2,
+            "Tutti fruitti-rhubarb": 1,
+            "Sweet amber": 1,
+            "Iris powder": 1,
+            "Powdery violet": 1,
+            "Modern freshness": 1,
+            "Fresh bergamot": 1
+          },
+          "families": {
+            "Balsamic": 1,
+            "Floral": 1
+          }
+        }
+      }
+    }
+  }
+}

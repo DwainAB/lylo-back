@@ -1,6 +1,8 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.models.schemas import (
+    ChangeFormulaTypeRequest,
+    GenerateFormulasRequest,
     ReplaceNoteRequest,
     SaveAnswerRequest,
     SaveProfileRequest,
@@ -111,13 +113,13 @@ async def get_profile(session_id: str):
 
 
 @router.post("/session/{session_id}/generate-formulas")
-async def generate_formulas(session_id: str):
+async def generate_formulas(session_id: str, body: GenerateFormulasRequest = GenerateFormulasRequest()):
     if not redis_service.is_profile_complete(session_id):
         raise HTTPException(
             status_code=400,
             detail="Profile incomplete, cannot generate formulas",
         )
-    result = formula_service.generate_formulas(session_id)
+    result = formula_service.generate_formulas(session_id, force_type=body.formula_type)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -140,6 +142,14 @@ async def select_formula(
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     background_tasks.add_task(_send_formula_mail_bg, session_id, result["formula"])
+    return result
+
+
+@router.post("/session/{session_id}/change-formula-type")
+async def change_formula_type(session_id: str, body: ChangeFormulaTypeRequest):
+    result = formula_service.change_selected_formula_type(session_id, body.formula_type)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 

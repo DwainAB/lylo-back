@@ -53,7 +53,7 @@ async def entrypoint(ctx: JobContext):
         )
 
     voice_gender = config.get("voice_gender", "female")
-    ai_name = "Rose" if voice_gender == "female" else "Carlosse"
+    ai_name = "Rose" if voice_gender == "female" else "Florian"
 
     # --- Standby / pause mode state ---
     paused = [False]
@@ -165,14 +165,15 @@ async def entrypoint(ctx: JobContext):
 
     # Define the generate_formulas tool for the LLM to call after all questions
     @function_tool()
-    async def generate_formulas():
-        """Generates 2 personalized perfume formulas from questionnaire answers. Call ONLY when ALL questions have been answered and confirmed. / Génère 2 formules de parfum personnalisées. Appelle cette fonction UNIQUEMENT quand TOUTES les questions ont été répondues."""
+    async def generate_formulas(formula_type: str):
+        """Generates 2 personalized perfume formulas. formula_type must be 'frais', 'mix', or 'puissant' based on the user's explicit preference. Call ONLY after asking the user their preference AND after ALL questionnaire questions have been answered. / Génère 2 formules de parfum personnalisées. formula_type doit être 'frais', 'mix' ou 'puissant' selon la préférence explicite de l'utilisateur. Appelle UNIQUEMENT après avoir demandé la préférence ET après que TOUTES les questions du questionnaire ont été répondues."""
         await send_state_update({
             "type": "state_change",
             "state": "generating_formulas",
         })
         resp = await http.post(
-            f"/api/session/{session_id}/generate-formulas"
+            f"/api/session/{session_id}/generate-formulas",
+            json={"formula_type": formula_type},
         )
         if resp.status_code != 200:
             detail = resp.json().get('detail', 'Unable to generate formulas' if is_en else 'Impossible de générer les formules')
@@ -249,6 +250,27 @@ async def entrypoint(ctx: JobContext):
         if is_en:
             return f"Note replaced: {old_note} → {new_note}. Formula updated with new ml calculations."
         return f"Note remplacée : {old_note} → {new_note}. Formule mise à jour avec les nouveaux calculs en ml."
+
+    # Define the change_formula_type tool to swap formula type in Phase 4 without re-selection
+    @function_tool()
+    async def change_formula_type(formula_type: str):
+        """Changes the type (frais/mix/puissant) of the already selected formula directly, without presenting 2 new formulas. Call this ONLY in Phase 4 (after a formula has been selected). / Change le type (frais/mix/puissant) de la formule déjà sélectionnée directement, sans présenter 2 nouvelles formules. À appeler UNIQUEMENT en Phase 4 (après qu'une formule a été sélectionnée)."""
+        resp = await http.post(
+            f"/api/session/{session_id}/change-formula-type",
+            json={"formula_type": formula_type},
+        )
+        if resp.status_code != 200:
+            detail = resp.json().get('detail', 'Error changing formula type' if is_en else 'Erreur lors du changement de type')
+            return f"Error: {detail}" if is_en else f"Erreur: {detail}"
+        data = resp.json()
+        await send_state_update({
+            "type": "formula_selected",
+            "state": "customization",
+            "formula": data["formula"],
+        })
+        if is_en:
+            return f"Formula type changed to '{formula_type}'. New formula applied. Stay in Phase 4."
+        return f"Type de formule changé en '{formula_type}'. Nouvelle formule appliquée. Restez en Phase 4."
 
     # Create agent with questionnaire instructions
     num_questions = len(config["questions"])
@@ -404,6 +426,7 @@ You must collect the following information, in this order, in a fluid and natura
 You must validate the information the user gives you. Be playful and use humor, but stay firm:
 
 **Age validation:**
+- The speech-to-text transcription may write numbers as words (e.g. "twenty-five", "sixty"). ALWAYS convert spelled-out numbers to digits before validating. Never ask the user to repeat just because the number was transcribed in letters.
 - If the user gives a valid age between 12 and 120, save it IMMEDIATELY without asking for confirmation. Simply respond naturally (e.g. "Great!", "Perfect!") and move on.
 - MINIMUM AGE: 12 years old. If the user says they are under 12, respond with humor, e.g. "Haha, I love the enthusiasm! But this experience is for the grown-ups — come back in a few years and I promise it'll be worth the wait!"
 - MAXIMUM AGE: 120 years old. If they give an unrealistic age (e.g. 200, 999), joke about it, e.g. "Wow, you've discovered the secret to immortality! But seriously, what's your real age?"
@@ -456,7 +479,7 @@ Questionnaire rules:
 - The user answers out loud. The transcription may be imperfect (e.g., "beach" → "beach.", "Beach", "the beach", "beech", etc.). Accept the answer if it clearly matches one of the choices, even with variations in case, punctuation, or phrasing.
 - If the answer doesn't match ANY choice, kindly suggest the available options.
 - NEVER move to the next question without having called save_answer after confirmation.
-- When all {num_questions} question(s) listed above are done, IMMEDIATELY call `generate_formulas()` to generate the 2 personalized formulas. Do NOT ask any more questions. Move to Phase 3.
+- When all {num_questions} question(s) listed above are done, you MUST ask ONE final question before generating formulas: ask the user their fragrance intensity preference in a natural way, for example: "Before I create your formulas, one last thing — do you prefer fresh and light fragrances, powerful and intense ones, or a mix of both?" Wait for their answer, then call `generate_formulas(formula_type=...)` with 'frais' (fresh/light), 'puissant' (powerful/intense), or 'mix' (mix of both) accordingly. If the user says they don't know, can't decide, or asks you to choose for them (e.g. "I don't know", "advise me", "surprise me", "you choose"), recommend 'mix' as the balanced option — e.g. "In that case, I'd recommend a mix — it's the most versatile option!" — and call `generate_formulas(formula_type='mix')`. Move to Phase 3.
 - You MUST speak in English at all times.
 - NEVER read or list the choices out loud. The user can already see them on screen. If the user hesitates, invite them to look, for example: "Take a look at the choices in front of you and tell me which ones catch your eye."
 
@@ -465,12 +488,18 @@ Questionnaire rules:
 After calling `generate_formulas()`, you receive 2 formulas. Each formula comes with 3 size options (10ml, 30ml, 50ml) that include precise ml quantities for each note and booster. For each formula, present enthusiastically and naturally:
 1. The profile name (e.g., "Your first formula is called The Influencer!")
 2. A short description of the profile in your own words
-3. The top, heart, and base notes in a poetic way (don't just read a list, describe the olfactory atmosphere)
+3. A global, atmospheric description of the fragrance — describe the overall scent impression (e.g., "it's a fresh, airy fragrance with a warm, woody heart") rather than listing individual notes. Paint a picture of the experience: the mood, the occasion it evokes, the feeling it gives. Do NOT enumerate or explain each note one by one.
 4. Mention that the formula is available in 3 sizes: 10ml, 30ml, and 50ml
 
-You do NOT need to read out all the ml details — the frontend will display the detailed breakdown with exact quantities. Just mention the sizes exist and focus on describing the scent experience.
+You do NOT need to read out all the ml details — the frontend will display the detailed breakdown with exact quantities. Just mention the sizes exist and focus on the overall scent experience.
+If the user asks about a specific note or wants more detail on the composition, then and only then go into detail about the notes they're curious about.
 
 After presenting both formulas, ask the user which one they prefer. The user MUST choose one of the 2 formulas. They can ask questions about the formulas before deciding, take your time to answer them. Once the user clearly states their choice, IMMEDIATELY call `select_formula(formula_index)` (0 for the first, 1 for the second). Then move to Phase 4.
+
+**Changing the formula type:**
+If the user expresses a desire to change the intensity or style of their fragrance (e.g., "actually I'd prefer something lighter", "can I have something stronger?", "I'd like a mix instead"):
+- **In Phase 3 (before a formula has been selected):** Acknowledge warmly, call `generate_formulas(formula_type=...)` with the new type, present the 2 new formulas, then call `select_formula(formula_index)` as usual.
+- **In Phase 4 (after a formula has been selected):** Acknowledge warmly (e.g., "Of course! I'll update your formula right away."), then call `change_formula_type(formula_type=...)` directly. A new formula is generated immediately and replaces the current one. Stay in Phase 4 — no re-selection needed. Present the new formula enthusiastically.
 
 {phase4_en}
 
@@ -514,7 +543,9 @@ When the user is satisfied with their personalized formula (after any replacemen
 Conversation filters:
 - You can answer any questions related to perfumery (ingredients, olfactory families, top/heart/base notes, perfume history, advice, etc.).
 - You can answer meta-questions about the questionnaire ("How is this question useful?", "Why are you asking me this?"). Briefly explain the connection to creating a personalized olfactory profile, then re-ask the current question.
+- If the user asks for the website or web address of Le Studio des Parfums, provide this URL: studiodesparfums-paris.fr
 - If the user asks an off-topic question, gently bring them back to the questionnaire with humor or kindness.
+- If the user asks you to repeat, says they didn't hear or didn't understand what you said, ALWAYS repeat your last message clearly. You may also remind them: "And if you ever want to review everything I've said, there's a button on the right side of the screen with a message icon — just click it and you'll see our full conversation in writing!"
 
 Handling inappropriate behavior:
 - If the user insults you or makes disrespectful remarks, respond calmly and firmly, without aggression.
@@ -568,6 +599,7 @@ Tu dois collecter les informations suivantes, dans cet ordre, de manière fluide
 Tu dois valider les informations que l'utilisateur te donne. Sois joueur(se) et utilise l'humour, mais reste ferme :
 
 **Validation de l'âge :**
+- La transcription vocale peut écrire les nombres en lettres (ex : "vingt-cinq", "soixante"). Convertis TOUJOURS les nombres écrits en lettres en chiffres avant de les valider. Ne demande JAMAIS à l'utilisateur de répéter simplement parce que le nombre est transcrit en lettres.
 - Si l'utilisateur donne un âge valide entre 12 et 120 ans, sauvegarde-le IMMÉDIATEMENT sans demander de confirmation. Réponds simplement de façon naturelle (ex : "Super !", "Parfait !") et passe à la suite.
 - ÂGE MINIMUM : 12 ans. Si l'utilisateur dit avoir moins de 12 ans, réponds avec humour, ex : "Haha, j'adore l'enthousiasme ! Mais cette expérience est plutôt réservée aux grands — revenez dans quelques années, je vous promets que ça vaudra le coup !"
 - ÂGE MAXIMUM : 120 ans. Si l'âge est irréaliste (ex : 200, 999), plaisante, ex : "Oh là là, vous avez trouvé l'élixir de jouvence ? Plus sérieusement, quel est votre vrai âge ?"
@@ -620,7 +652,7 @@ Règles du questionnaire:
 - L'utilisateur répond à voix haute. La transcription peut être imparfaite (ex: "plage" → "plage.", "Plage", "la plage", "plaj", etc.). Acceptez la réponse si elle correspond clairement à un des choix, même avec des variations de casse, ponctuation ou formulation.
 - Si la réponse ne correspond à AUCUN choix, proposez gentiment les options disponibles.
 - Ne passez JAMAIS à la question suivante sans avoir appelé save_answer après confirmation.
-- Quand les {num_questions} question(s) listées ci-dessus sont terminées, appelle IMMÉDIATEMENT `generate_formulas()` pour générer les 2 formules personnalisées. Ne pose AUCUNE autre question. Passe à la Phase 3.
+- Quand les {num_questions} question(s) listées ci-dessus sont terminées, vous DEVEZ poser UNE dernière question avant de générer les formules : demandez à l'utilisateur sa préférence de type de parfum de façon naturelle, par exemple : "Avant de créer vos formules, une dernière chose — vous préférez des parfums plutôt frais et légers, plutôt puissants et intenses, ou un mix des deux ?" Attendez sa réponse, puis appelez `generate_formulas(formula_type=...)` avec 'frais', 'puissant' ou 'mix' selon sa réponse. Si l'utilisateur ne sait pas, hésite, ou vous laisse choisir (ex : "je sais pas", "conseillez-moi", "vous choisissez", "surprenez-moi"), recommandez le 'mix' comme option équilibrée — ex : "Dans ce cas, je vous conseille le mix — c'est l'option la plus polyvalente !" — et appelez `generate_formulas(formula_type='mix')`. Passez à la Phase 3.
 - Parle en français.
 - Ne lisez et n'énumérez JAMAIS les choix à voix haute. L'utilisateur les voit déjà à l'écran. Si l'utilisateur hésite, invitez-le à les regarder, par exemple : "Jetez un œil aux choix devant vous et dites-moi ce qui vous attire."
 
@@ -629,12 +661,18 @@ Règles du questionnaire:
 Après avoir appelé `generate_formulas()`, tu reçois 2 formules. Chaque formule est disponible en 3 formats (10ml, 30ml, 50ml) avec les quantités précises en ml pour chaque note et booster. Pour chacune, présente de manière enthousiaste et naturelle:
 1. Le nom du profil (ex: "Votre première formule s'appelle The Influencer !")
 2. Une courte description du profil en vos propres mots
-3. Les notes de tête, de cœur et de fond de manière poétique (ne lisez pas juste une liste, décrivez l'ambiance olfactive)
+3. Une description globale et atmosphérique du parfum — décrivez l'impression olfactive d'ensemble (ex : "c'est un parfum frais et aérien avec un cœur chaud et boisé") plutôt que d'énumérer les notes une par une. Donnez envie : évoquez l'humeur, l'occasion, la sensation que procure ce parfum. Ne listez PAS et n'expliquez PAS chaque note individuellement.
 4. Mentionnez que la formule est disponible en 3 formats : 10ml, 30ml et 50ml
 
-Vous n'avez PAS besoin de lire tous les détails en ml — le frontend affichera le détail complet avec les quantités exactes. Mentionnez simplement les formats disponibles et concentrez-vous sur la description de l'expérience olfactive.
+Vous n'avez PAS besoin de lire tous les détails en ml — le frontend affichera le détail complet avec les quantités exactes. Mentionnez simplement les formats disponibles et concentrez-vous sur l'expérience olfactive globale.
+Si l'utilisateur demande des précisions sur une note en particulier ou souhaite en savoir plus sur la composition, alors seulement rentrez dans le détail des notes qui l'intéressent.
 
 Après avoir présenté les 2 formules, demandez à l'utilisateur laquelle il préfère. L'utilisateur DOIT choisir l'une des 2 formules. Il peut poser des questions sur les formules avant de décider, prenez le temps de lui répondre. Dès que l'utilisateur exprime clairement son choix, appelez IMMÉDIATEMENT `select_formula(formula_index)` (0 pour la première, 1 pour la deuxième). Passez ensuite à la Phase 4.
+
+**Changement de type de formule :**
+Si l'utilisateur exprime l'envie de changer l'intensité ou le style de son parfum (ex : "finalement je préférerais quelque chose de plus léger", "c'est possible d'avoir quelque chose de plus fort ?", "je voudrais plutôt un mix") :
+- **En Phase 3 (avant qu'une formule ait été sélectionnée) :** Accueillez chaleureusement, appelez `generate_formulas(formula_type=...)` avec le nouveau type, présentez les 2 nouvelles formules, puis appelez `select_formula(formula_index)` comme d'habitude.
+- **En Phase 4 (après qu'une formule a été sélectionnée) :** Accueillez chaleureusement (ex : "Bien sûr ! Je mets à jour votre formule tout de suite."), puis appelez `change_formula_type(formula_type=...)` directement. Une nouvelle formule est générée immédiatement et remplace la formule actuelle. Restez en Phase 4 — aucune re-sélection nécessaire. Présentez la nouvelle formule avec enthousiasme.
 
 {phase4_fr}
 
@@ -678,7 +716,9 @@ Lorsque l'utilisateur est satisfait de sa formule personnalisée (après les év
 Filtres de conversation:
 - Vous pouvez répondre à toutes les questions en rapport avec la parfumerie (ingrédients, familles olfactives, notes de tête/cœur/fond, histoire du parfum, conseils, etc.).
 - Vous pouvez répondre aux questions méta sur le questionnaire ("En quoi cette question est utile ?", "Pourquoi vous me posez ça ?"). Expliquez brièvement le lien avec la création d'un profil olfactif personnalisé, puis reposez la question en cours.
+- Si l'utilisateur demande l'adresse du site web ou le site du Studio des Parfums, communiquez cette adresse : studiodesparfums-paris.fr
 - Si l'utilisateur pose une question hors-sujet, ramenez-le gentiment vers le questionnaire avec humour ou douceur.
+- Si l'utilisateur vous demande de répéter, dit qu'il n'a pas entendu ou pas compris ce que vous venez de dire, RÉPÉTEZ TOUJOURS votre dernier message clairement. Vous pouvez également lui rappeler : "Et si vous souhaitez revoir tout ce que j'ai dit, il y a un bouton sur la droite de l'écran avec une icône de message — cliquez dessus et vous aurez accès à toute notre conversation par écrit !"
 
 Gestion des propos inappropriés:
 - Si l'utilisateur vous insulte ou tient des propos irrespectueux, réagissez avec calme et fermeté, sans agressivité.
@@ -709,7 +749,7 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
     agent = PausableAgent(
         instructions=instructions,
         tools=[save_user_profile, notify_top_2, save_answer, generate_formulas,
-               select_formula, get_available_ingredients, replace_note, enter_pause_mode],
+               select_formula, change_formula_type, get_available_ingredients, replace_note, enter_pause_mode],
     )
 
     # Create agent session with STT + LLM + TTS pipeline

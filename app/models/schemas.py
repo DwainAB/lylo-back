@@ -30,8 +30,16 @@ class SaveProfileRequest(BaseModel):
     value: str
 
 
+class GenerateFormulasRequest(BaseModel):
+    formula_type: Literal["frais", "mix", "puissant"] | None = None
+
+
 class SelectFormulaRequest(BaseModel):
     formula_index: int  # 0 ou 1
+
+
+class ChangeFormulaTypeRequest(BaseModel):
+    formula_type: Literal["frais", "mix", "puissant"]
 
 
 class ReplaceNoteRequest(BaseModel):
