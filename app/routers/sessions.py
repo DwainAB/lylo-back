@@ -28,7 +28,8 @@ async def start_session(body: StartSessionRequest, db: AsyncSession = Depends(ge
         if customer:
             if int(customer.sessions_available) <= 0:
                 raise HTTPException(status_code=403, detail="Aucune session disponible")
-            if customer.max_date and date.today() > customer.max_date:
+            max_date = customer.max_date.date() if hasattr(customer.max_date, 'date') else customer.max_date
+            if max_date and date.today() > max_date:
                 raise HTTPException(status_code=403, detail="Date d'accès expirée")
             await crud.update_customer(db, customer.id, sessions_available=int(customer.sessions_available) - 1)
         else:
