@@ -37,9 +37,10 @@ def save_session_meta(
     questions: list,
     agent_token: str,
     mode: str = "guided",
+    customer_email: str | None = None,
 ) -> None:
     r = _get_client()
-    r.hset(f"session:{session_id}:meta", mapping={
+    mapping = {
         "language": language,
         "voice_gender": voice_gender,
         "voice_id": voice_id,
@@ -48,7 +49,10 @@ def save_session_meta(
         "agent_token": agent_token,
         "mode": mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if customer_email:
+        mapping["customer_email"] = customer_email
+    r.hset(f"session:{session_id}:meta", mapping=mapping)
     r.sadd("sessions:index", session_id)
     r.expire(f"session:{session_id}:meta", SESSION_TTL_SECONDS)
 

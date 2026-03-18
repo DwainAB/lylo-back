@@ -1,9 +1,12 @@
 import asyncio
 import json
+import os
+import random
 
 import httpx
 from dotenv import load_dotenv
 
+from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, function_tool
 from livekit.plugins import bey, cartesia, deepgram, openai, silero
 
@@ -15,13 +18,32 @@ load_dotenv()
 
 settings = get_settings()
 
-BEY_AVATAR_FEMALE = "694c83e2-8895-4a98-bd16-56332ca3f449"
-BEY_AVATAR_MALE = "b63ba4e6-d346-45d0-ad28-5ddffaac0bd0_v2"
+BEY_AVATAR_MALE_MODELS = [
+    m for m in [
+        os.getenv("BEY_AVATAR_MALE_MODEL_1"),
+        os.getenv("BEY_AVATAR_MALE_MODEL_2"),
+    ] if m
+]
+
+BEY_AVATAR_FEMALE_MODELS = [
+    m for m in [
+        os.getenv("BEY_AVATAR_FEMALE_MODEL_1"),
+        os.getenv("BEY_AVATAR_FEMALE_MODEL_2"),
+        os.getenv("BEY_AVATAR_FEMALE_MODEL_3"),
+    ] if m
+]
+
+
+def pick_avatar(gender: str) -> str:
+    models = BEY_AVATAR_FEMALE_MODELS if gender == "female" else BEY_AVATAR_MALE_MODELS
+    return random.choice(models)
 
 
 async def entrypoint(ctx: JobContext):
 
     print("Agent started")
+
+    await ctx.connect()
 
     session_id = ctx.room.name.replace("room_", "")
 
@@ -61,35 +83,31 @@ async def entrypoint(ctx: JobContext):
     # --- Standby / pause mode state ---
     paused = [False]
 
-    def _is_wake_phrase(text: str) -> bool:
-        """Return True if the text contains the AI's name (or a STT variant) and the word 'question'."""
-        t = text.lower()
-        name_lower = ai_name.lower()
-        # Check exact name, then accept a 2-char truncation for longer names
-        # e.g. "Carlosse" → also accept "Carlos" (STT drops the trailing "se")
-        name_present = name_lower in t
-        if not name_present and len(name_lower) >= 6:
-            name_present = name_lower[:-2] in t
-        return name_present and "question" in t
-
     class PausableAgent(Agent):
         """Agent subclass that blocks llm_node while the assistant is in standby mode."""
 
         def llm_node(self, chat_ctx, tools, model_settings):
             if paused[0]:
-                last_user = next(
-                    (m for m in reversed(chat_ctx.messages()) if m.role == "user"),
-                    None,
-                )
-                if (
-                    last_user
-                    and last_user.text_content
-                    and _is_wake_phrase(last_user.text_content)
-                ):
-                    paused[0] = False
-                    return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
                 return None  # stay silent
             return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+
+        async def tts_node(self, text, model_settings):
+            # Yield all real TTS audio frames from Cartesia
+            async for frame in Agent.default.tts_node(self, text, model_settings):
+                yield frame
+
+            # Append 500ms of silence so the last audio chunk is fully flushed
+            # through the Bey avatar rendering pipeline before the stream closes.
+            sample_rate = 24000
+            samples_per_channel = 480  # 20ms per frame at 24kHz
+            silence_data = bytes(samples_per_channel * 2)  # 16-bit PCM, mono
+            for _ in range(25):  # 25 × 20ms = 500ms
+                yield rtc.AudioFrame(
+                    data=silence_data,
+                    sample_rate=sample_rate,
+                    num_channels=1,
+                    samples_per_channel=samples_per_channel,
+                )
 
     # Helper to send state updates to the frontend via LiveKit Data Channel
     async def send_state_update(payload: dict):
@@ -776,12 +794,18 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
         allow_interruptions=False,
     )
 
-    # Start Beyond Presence avatar in background — don't block conversation start
-    avatar_id = BEY_AVATAR_FEMALE if voice_gender == "female" else BEY_AVATAR_MALE
+    avatar_id = pick_avatar(voice_gender)
     avatar = bey.AvatarSession(avatar_id=avatar_id)
-    asyncio.ensure_future(avatar.start(session, room=ctx.room))
 
-    # Connect agent to room immediately (avatar connects in background)
+    async def _start_avatar():
+        try:
+            await avatar.start(session, room=ctx.room)
+        except Exception as e:
+            print(f"Avatar start failed (user may have disconnected early): {e}")
+
+    avatar_task = asyncio.ensure_future(_start_avatar())
+
+    # Connect agent to room
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -795,14 +819,20 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
                 paused[0] = False
                 print(f"Agent resumed via frontend button for room: {ctx.room.name}")
                 if is_en:
-                    resume_prompt = "The user just clicked a button to resume the conversation. Greet them warmly and briefly, and ask how you can help. For example: 'Of course! What's your question?'"
+                    resume_prompt = "The user just clicked a button to resume the conversation. Do NOT say hello or re-introduce yourself. Simply say something like 'I'm listening, what's your question?' or 'Go ahead, I'm here.' Be brief and natural."
                 else:
-                    resume_prompt = "L'utilisateur vient de cliquer sur un bouton pour reprendre la conversation. Accueillez-le chaleureusement et brièvement, et demandez-lui en quoi vous pouvez l'aider. Par exemple : 'Bien sûr ! Quelle est votre question ?'"
+                    resume_prompt = "L'utilisateur vient de cliquer sur un bouton pour reprendre la conversation. Ne dites surtout pas bonjour et ne vous présentez pas à nouveau. Dites simplement quelque chose comme 'Je vous écoute, quelle est votre question ?' ou 'Allez-y, je suis là.' Soyez bref(ve) et naturel(le)."
                 asyncio.ensure_future(session.generate_reply(instructions=resume_prompt))
         except Exception:
             pass
 
     ctx.room.on("data_received", _on_data_received)
+
+    # Wait for avatar to be ready before greeting to avoid the first message being cut off
+    try:
+        await asyncio.wait_for(asyncio.shield(avatar_task), timeout=10.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"Avatar not ready within timeout, proceeding anyway: {e}")
 
     # Start with the introduction phase (collect user profile before questionnaire)
     if config.get("language", "fr") == "fr":

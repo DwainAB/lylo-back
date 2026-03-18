@@ -8,6 +8,7 @@ class StartSessionRequest(BaseModel):
     voice_gender: Literal["female", "male"] = "female"
     question_count: int = Field(default=1, ge=1, le=12)
     mode: Literal["guided", "discovery"] = "guided"
+    email: str | None = None
 
 
 class StartSessionResponse(BaseModel):

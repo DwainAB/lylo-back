@@ -1,5 +1,8 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import get_db
+from app.database import crud
 from app.models.schemas import (
     ChangeFormulaTypeRequest,
     GenerateFormulasRequest,
@@ -17,12 +20,21 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 
 
 @router.post("/session/start", response_model=StartSessionResponse)
-async def start_session(body: StartSessionRequest):
+async def start_session(body: StartSessionRequest, db: AsyncSession = Depends(get_db)):
+    if body.email:
+        customer = await crud.get_customer_by_email(db, body.email)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Client introuvable")
+        if int(customer.sessions_available) <= 0:
+            raise HTTPException(status_code=403, detail="Aucune session disponible")
+        await crud.update_customer(db, customer.id, sessions_available=int(customer.sessions_available) - 1)
+
     result = session_service.create_session(
         language=body.language,
         voice_gender=body.voice_gender,
         question_count=body.question_count,
         mode=body.mode,
+        customer_email=body.email,
     )
     return result
 
@@ -36,13 +48,13 @@ async def get_session(session_id: str):
 
 
 @router.delete("/session/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
     meta = redis_service.get_session_meta(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
     room_name = meta.get("room_name", f"room_{session_id}")
-    await livekit_service.delete_room(room_name)
     redis_service.delete_session(session_id)
+    await livekit_service.delete_room(room_name)
     return {"status": "ok", "session_id": session_id}
 
 

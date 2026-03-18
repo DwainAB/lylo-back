@@ -15,3 +15,5 @@ redis
 httpx
 openpyxl
 weasyprint
+sqlalchemy[asyncio]
+aiomysql
