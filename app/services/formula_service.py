@@ -335,25 +335,34 @@ def _select_notes_by_score(
     return result
 
 
-def _derive_profile_from_notes(selected_notes: dict[str, list[dict]]) -> str:
+def _derive_profile_from_notes(
+    selected_notes: dict[str, list[dict]],
+    excluded_profiles: set[str] | None = None,
+) -> str:
     """Dérive le profil dominant à partir des notes sélectionnées.
 
     Utilise les champs profile_1 (poids 2) et profile_2 (poids 1) du XLSX.
+    Les profils dans excluded_profiles sont ignorés.
     """
     coffret = _get_coffret()
     ing_by_name = {ing["name"]: ing for ing in coffret["ingredients"]}
+    excluded = excluded_profiles or set()
 
     profile_counts: dict[str, int] = defaultdict(int)
     for key in ("top_notes", "heart_notes", "base_notes"):
         for note in selected_notes.get(key, []):
             ing = ing_by_name.get(note["name"])
             if ing:
-                if ing["profile_1"]:
+                if ing["profile_1"] and ing["profile_1"] not in excluded:
                     profile_counts[ing["profile_1"]] += 2
-                if ing["profile_2"]:
+                if ing["profile_2"] and ing["profile_2"] not in excluded:
                     profile_counts[ing["profile_2"]] += 1
 
     if not profile_counts:
+        # Fallback : premier profil connu qui ne soit pas exclu
+        for p in _PROFILE_NORMALIZE.values():
+            if p not in excluded:
+                return p
         return "Trailblazer"
 
     return max(profile_counts, key=lambda p: profile_counts[p])
@@ -465,6 +474,7 @@ def _build_formula(
     excluded_names: set[str],
     language: str,
     force_type: str | None = None,
+    excluded_profiles: set[str] | None = None,
 ) -> dict:
     """Construit une formule complète à partir des scores de notes.
 
@@ -483,7 +493,7 @@ def _build_formula(
     )
 
     # 2. Dériver le profil dominant et le type de formule
-    profile_name = _derive_profile_from_notes(preliminary)
+    profile_name = _derive_profile_from_notes(preliminary, excluded_profiles=excluded_profiles)
     formula_type = force_type if force_type in _FORMULA_TYPE_CONFIGS else _classify_formula_type(profile_name)
 
     # 3. Ajuster la sélection au nombre de notes du type de formule
@@ -561,13 +571,15 @@ def generate_formulas(session_id: str, force_type: str | None = None) -> dict:
     # Scorer toutes les notes depuis les réponses
     note_scores = _score_notes(session_data["answers"])
 
-    # Générer 2 formules avec des notes différentes
+    # Générer 2 formules avec des notes et des profils différents
     formulas = []
     excluded_names: set[str] = set()
+    excluded_profiles: set[str] = set()
 
     for _ in range(2):
-        formula = _build_formula(note_scores, blocked_names, excluded_names, language, force_type)
+        formula = _build_formula(note_scores, blocked_names, excluded_names, language, force_type, excluded_profiles)
         excluded_names |= formula.pop("_selected_en_names", set())
+        excluded_profiles.add(formula["profile"])
         formulas.append(formula)
 
     session_store.save_generated_formulas(session_id, formulas)
@@ -656,14 +668,25 @@ def get_available_ingredients(
     coffret = _get_coffret()
     blocked_ingredients = _get_blocked_ingredients(user_allergens)
 
+    # Exclure les notes déjà présentes dans la formule sélectionnée
+    selected = session_store.get_selected_formula(session_id)
+    already_in_formula: set[str] = set()
+    if selected:
+        note_key = {"top": "top_notes", "heart": "heart_notes", "base": "base_notes"}[note_type]
+        for note in selected.get("details", {}).get(note_key, []):
+            already_in_formula.add(note["name"].lower())
+
     ingredients = []
     for ingredient in coffret["ingredients"]:
         if ingredient["note_type"] != note_type:
             continue
         if ingredient["name"] in blocked_ingredients:
             continue
+        translated = translate_name(ingredient["name"])
+        if translated.lower() in already_in_formula:
+            continue
         ingredients.append({
-            "name": translate_name(ingredient["name"]),
+            "name": translated,
             "family": ingredient["family"],
             "description": ingredient["description"],
         })

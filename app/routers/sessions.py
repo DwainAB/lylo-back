@@ -1,3 +1,4 @@
+import unicodedata
 from datetime import date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -78,6 +79,48 @@ async def session_list():
     return session_service.list_session_ids()
 
 
+def _normalize(s: str) -> str:
+    """Lowercase + supprime les accents pour comparaison souple."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s.lower())
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+def _canonical_choice(submitted: str, valid_labels: list[str]) -> str:
+    """Retourne le label canonique le plus proche parmi valid_labels.
+
+    Ordre de priorité :
+    1. Correspondance exacte (insensible à la casse/accents)
+    2. Correspondance du préfixe avant " - " (insensible à la casse/accents)
+    3. Le label canonique dont le préfixe normalisé contient le texte soumis
+    4. Valeur soumise inchangée si aucun match
+    """
+    norm_submitted = _normalize(submitted)
+    # Préfixe soumis (avant " - ")
+    submitted_prefix = norm_submitted.split(" - ")[0].strip()
+
+    for label in valid_labels:
+        if _normalize(label) == norm_submitted:
+            return label
+
+    for label in valid_labels:
+        label_prefix = _normalize(label).split(" - ")[0].strip()
+        if label_prefix == submitted_prefix:
+            return label
+
+    for label in valid_labels:
+        label_prefix = _normalize(label).split(" - ")[0].strip()
+        if submitted_prefix in label_prefix or label_prefix in submitted_prefix:
+            return label
+
+    return submitted
+
+
+def _normalize_choices(choices: list[str], valid_labels: list[str]) -> list[str]:
+    return [_canonical_choice(c, valid_labels) for c in choices]
+
+
 @router.post("/session/{session_id}/save-answer")
 async def save_answer(session_id: str, body: SaveAnswerRequest):
     if not session_store.is_profile_complete(session_id):
@@ -85,12 +128,28 @@ async def save_answer(session_id: str, body: SaveAnswerRequest):
             status_code=400,
             detail="Profile incomplete, cannot save answers yet",
         )
+
+    # Récupérer les choix valides pour cette question depuis la session
+    meta = session_store.get_session_meta(session_id)
+    top_2 = body.top_2
+    bottom_2 = body.bottom_2
+    if meta:
+        questions = meta.get("questions", [])
+        question = next((q for q in questions if q["id"] == body.question_id), None)
+        if question:
+            valid_labels = [
+                c["label"] if isinstance(c, dict) else c
+                for c in question.get("choices", [])
+            ]
+            top_2 = _normalize_choices(top_2, valid_labels)
+            bottom_2 = _normalize_choices(bottom_2, valid_labels)
+
     session_store.save_answer(
         session_id=session_id,
         question_id=body.question_id,
         question_text=body.question_text,
-        top_2=body.top_2,
-        bottom_2=body.bottom_2,
+        top_2=top_2,
+        bottom_2=bottom_2,
     )
     return {"status": "ok"}
 
