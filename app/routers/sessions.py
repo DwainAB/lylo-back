@@ -215,14 +215,16 @@ def _send_formula_mail_bg(session_id: str, formula: dict) -> None:
     internal_email = get_settings().internal_email
     if not internal_email:
         return
-    try:
-        mail_service.send_mail(internal_email, session_id, formula)
-    except Exception as e:
-        print(f"[mail] Erreur envoi mail client interne : {e}")
-    try:
-        mail_service.send_internal_formula_mail(internal_email, session_id, formula)
-    except Exception as e:
-        print(f"[mail] Erreur envoi mail fiche complète : {e}")
+    recipients = [e.strip() for e in internal_email.split(",") if e.strip()]
+    for email in recipients:
+        try:
+            mail_service.send_mail(email, session_id, formula)
+        except Exception as e:
+            print(f"[mail] Erreur envoi mail formule à {email} : {e}")
+        try:
+            mail_service.send_internal_formula_mail(email, session_id, formula)
+        except Exception as e:
+            print(f"[mail] Erreur envoi mail fiche complète à {email} : {e}")
 
 
 @router.post("/session/{session_id}/select-formula")
