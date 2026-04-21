@@ -586,6 +586,41 @@ def generate_formulas(session_id: str, force_type: str | None = None) -> dict:
     return {"formulas": formulas}
 
 
+def generate_formulas_stateless(
+    answers: dict,
+    language: str = "fr",
+    has_allergies: str = "non",
+    user_allergens_raw: str = "",
+    force_type: str | None = None,
+) -> dict:
+    """Génère 2 formules sans session — reçoit les données directement en paramètre."""
+    if not answers:
+        return {"error": "Aucune réponse fournie", "formulas": []}
+
+    user_allergens = None
+    if has_allergies == "oui" and user_allergens_raw:
+        user_allergens = [
+            a.strip()
+            for a in user_allergens_raw.replace(",", ";").split(";")
+            if a.strip()
+        ]
+
+    blocked_names = _get_blocked_ingredients(user_allergens)
+    note_scores = _score_notes(answers)
+
+    formulas = []
+    excluded_names: set[str] = set()
+    excluded_profiles: set[str] = set()
+
+    for _ in range(2):
+        formula = _build_formula(note_scores, blocked_names, excluded_names, language, force_type, excluded_profiles)
+        excluded_names |= formula.pop("_selected_en_names", set())
+        excluded_profiles.add(formula["profile"])
+        formulas.append(formula)
+
+    return {"formulas": formulas}
+
+
 # ── Sélection et personnalisation ─────────────────────────────────────
 
 def change_selected_formula_type(session_id: str, formula_type: str) -> dict:

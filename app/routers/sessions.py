@@ -8,16 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import get_db
 from app.database import crud
 from app.models.schemas import (
+    BatchGenerateRequest,
     ChangeFormulaTypeRequest,
     GenerateFormulasRequest,
     ReplaceNoteRequest,
     SaveAnswerRequest,
     SaveProfileRequest,
     SelectFormulaRequest,
+    SendFormulaMailRequest,
     StartSessionRequest,
     StartSessionResponse,
 )
 from app.config import get_settings
+from app.data.questions import QUESTIONS_EN, QUESTIONS_FR, _enrich_questions
 from app.services import formula_service, livekit_service, mail_service, pdf_service, session_store, session_service
 
 router = APIRouter(prefix="/api", tags=["sessions"])
@@ -213,11 +216,20 @@ async def generate_formulas(session_id: str, body: GenerateFormulasRequest = Gen
 
 
 def _send_formula_mail_bg(session_id: str, formula: dict) -> None:
+    # Mail client
+    meta = session_store.get_session_meta(session_id)
+    customer_email = meta.get("customer_email") if meta else None
+    if customer_email:
+        try:
+            mail_service.send_mail(customer_email, session_id, formula)
+        except Exception as e:
+            print(f"[mail] Erreur envoi mail formule au client {customer_email} : {e}")
+
+    # Mail interne
     internal_email = get_settings().internal_email
     if not internal_email:
         return
-    recipients = [e.strip() for e in internal_email.split(",") if e.strip()]
-    for email in recipients:
+    for email in [e.strip() for e in internal_email.split(",") if e.strip()]:
         try:
             mail_service.send_mail(email, session_id, formula)
         except Exception as e:
@@ -284,3 +296,42 @@ async def get_formula_pdf(session_id: str):
 @router.get("/sessions/all-answers")
 async def get_all_answers():
     return session_store.get_all_sessions()
+
+
+@router.get("/questions")
+async def get_questions(count: int = 12, language: str = "fr"):
+    if not 1 <= count <= 12:
+        raise HTTPException(status_code=400, detail="count doit être entre 1 et 12")
+    questions = QUESTIONS_FR if language == "fr" else QUESTIONS_EN
+    return {"questions": _enrich_questions(questions[:count])}
+
+
+@router.post("/formulas/send-mail")
+async def send_formula_mail(body: SendFormulaMailRequest, background_tasks: BackgroundTasks):
+    try:
+        mail_service.send_formula_mail_stateless(body.email, body.formula, body.language)
+    except Exception as e:
+        print(f"[mail] Erreur envoi: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "ok"}
+
+
+@router.post("/formulas/generate")
+async def batch_generate_formulas(body: BatchGenerateRequest):
+    answers = {
+        str(a.question_id): {
+            "question": a.question_text,
+            "top_2": a.top_2,
+            "bottom_2": a.bottom_2,
+        }
+        for a in body.answers
+    }
+    result = formula_service.generate_formulas_stateless(
+        answers=answers,
+        language=body.language,
+        has_allergies=body.has_allergies,
+        user_allergens_raw=body.allergies or "",
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result

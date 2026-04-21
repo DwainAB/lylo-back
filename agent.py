@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import random
+import time as _boot_time
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
 import httpx
 from dotenv import load_dotenv
@@ -10,7 +14,6 @@ from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, JobProcess, WorkerOptions, cli, function_tool
 from livekit.plugins import bey, cartesia, deepgram, openai, silero
 
-
 from app.config import get_settings
 
 # LiveKit SDK reads LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
@@ -18,6 +21,14 @@ from app.config import get_settings
 load_dotenv()
 
 settings = get_settings()
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("lylo.agent")
+logger.info("=== Agent module loaded at boot ===")
 
 BEY_AVATAR_MALE_MODELS = [
     m for m in [
@@ -37,92 +48,483 @@ BEY_AVATAR_FEMALE_MODELS = [
 
 def pick_avatar(gender: str) -> str:
     models = BEY_AVATAR_FEMALE_MODELS if gender == "female" else BEY_AVATAR_MALE_MODELS
+    if not models:
+        fallback = BEY_AVATAR_FEMALE_MODELS or BEY_AVATAR_MALE_MODELS
+        if not fallback:
+            raise ValueError(f"Aucun avatar Bey configuré pour le genre '{gender}' — vérifiez BEY_AVATAR_MALE_MODEL_* / BEY_AVATAR_FEMALE_MODEL_* dans .env")
+        logger.warning(f"[AVATAR] Aucun avatar pour genre='{gender}', fallback sur l'autre genre")
+        models = fallback
     return random.choice(models)
 
 
+# ─────────────────────────────────────────────
+# Machine à états
+# ─────────────────────────────────────────────
+
+class AgentPhase(Enum):
+    # Phase 1 — Profil
+    GREET = auto()
+    GET_GENDER = auto()
+    GET_AGE = auto()
+    GET_PREGNANT = auto()
+    GET_ALLERGIES = auto()
+    GET_ALLERGY_DETAIL = auto()
+    # Phase 2 — Questionnaire
+    Q_FAVORITES = auto()
+    Q_JUSTIFY_FAV_1 = auto()
+    Q_JUSTIFY_FAV_2 = auto()
+    Q_LEAST = auto()
+    Q_JUSTIFY_LEAST_1 = auto()
+    Q_JUSTIFY_LEAST_2 = auto()
+    Q_CONFIRM = auto()
+    # Phase 3 — Formules
+    INTENSITY = auto()
+    PRESENT_FORMULAS = auto()
+    # Phase 4 — Personnalisation / Découverte
+    CUSTOMIZATION = auto()
+    # Phase 5 — Fin
+    STANDBY = auto()
+
+
+@dataclass
+class SessionState:
+    phase: AgentPhase = AgentPhase.GREET
+    current_question_index: int = 0
+    current_top_2: list = field(default_factory=list)
+    current_bottom_2: list = field(default_factory=list)
+    profile: dict = field(default_factory=dict)
+    answers_saved: int = 0
+    formula_type: str | None = None
+    selected_formula_index: int | None = None
+
+
+# ─────────────────────────────────────────────
+# Prompts par état
+# ─────────────────────────────────────────────
+
+PERSONALITY_FR = """Tu t'appelles {ai_name}. Tu travailles pour Le Studio des Parfums.
+
+TON & PERSONNALITÉ : Tu es chaleureux(se), souriant(e) et passionné(e) par l'univers du parfum. Tu parles de façon naturelle et fluide, jamais comme un robot. Utilise un ton conversationnel, détendu mais professionnel. VOUVOIE TOUJOURS l'utilisateur. Fais des petites réactions naturelles ("Oh très bien !", "Ah c'est intéressant !"). Parle avec des phrases courtes et naturelles. Ne mentionne jamais Lilo, Le Studio des Parfums, ni que tu es une IA ou une assistante vocale.
+
+RÈGLES ABSOLUES : Ne jamais écrire la syntaxe des function calls dans ton texte. Les fonctions doivent être appelées UNIQUEMENT via l'interface outil. Ne jamais corriger, signaler ou commenter la formulation de l'utilisateur (singulier/pluriel, accents, majuscules) — normalise silencieusement et continue.
+
+Si l'utilisateur pose une question sur la parfumerie, réponds-y brièvement et avec expertise, puis reviens immédiatement à ta mission actuelle.
+
+GESTION DES RÉPONSES ABSURDES : Utilise l'humour pour demander la vraie information. Ex: "500 ans ? Quel beau parcours ! Mais pour le parfum, j'ai besoin de votre âge terrestre."
+"""
+
+PERSONALITY_EN = """Your name is {ai_name}. You work for Le Studio des Parfums.
+
+TONE & PERSONALITY: You are warm, friendly, and passionate about the world of perfume. You speak naturally and fluidly, never like a robot. Use a conversational, relaxed but professional tone. React naturally to answers ("Oh great!", "That's interesting!"). Speak in short, natural sentences. NEVER mention Lilo, Le Studio des Parfums, or that you are an AI or voice assistant. ALWAYS speak in English.
+
+ABSOLUTE RULES: Never write function call syntax in your text. Functions must be called ONLY through the tool interface. Never correct, signal or comment on the user's wording (singular/plural, accents, capitalization) — normalize silently and continue.
+
+If the user asks a perfumery question, answer briefly and expertly, then return immediately to your current mission.
+
+ABSURD ANSWER HANDLING: Use humor to get the real information. Ex: "500 years old? What a journey! But for the perfume, I need your earthly age."
+"""
+
+
+def get_prompt(state: SessionState, config: dict, ai_name: str, is_en: bool, input_mode: str) -> str:
+    phase = state.phase
+    lang = "en" if is_en else "fr"
+    personality = (PERSONALITY_EN if is_en else PERSONALITY_FR).format(ai_name=ai_name)
+
+    questions = config.get("questions", [])
+    num_questions = len(questions)
+
+    # ── Phase 1 : Profil ──────────────────────────────────────────────────
+
+    if phase == AgentPhase.GREET:
+        if is_en:
+            mission = f"Greet the user warmly and simply. Introduce yourself just with your first name ({ai_name}). For example: 'Hey! I'm {ai_name}, nice to meet you! And what's your name?' Be natural and friendly. As soon as the user gives their name, call save_user_profile(field='first_name', value=<their name>) IMMEDIATELY."
+        else:
+            mission = f"Saluez l'utilisateur chaleureusement et simplement en le vouvoyant. Présentez-vous juste avec votre prénom ({ai_name}). Par exemple : 'Bonjour ! Moi c'est {ai_name}, enchantée ! Et vous, comment vous appelez-vous ?' Soyez naturel(le). Dès que l'utilisateur donne son prénom, appelez IMMÉDIATEMENT save_user_profile(field='first_name', value=<le prénom>)."
+
+    elif phase == AgentPhase.GET_GENDER:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"The user's name is {first_name}. Ask naturally whether it's a masculine or feminine name, for example: 'Nice name! Is it more of a masculine or feminine name?' As soon as they answer, IMMEDIATELY call save_user_profile(field='gender', value='masculin') or save_user_profile(field='gender', value='féminin')."
+        else:
+            mission = f"Le prénom de l'utilisateur est {first_name}. Demandez naturellement si c'est un prénom masculin ou féminin, par exemple : 'Joli prénom ! C'est plutôt masculin ou féminin ?' Dès qu'il/elle répond, appelez IMMÉDIATEMENT save_user_profile(field='gender', value='masculin') ou save_user_profile(field='gender', value='féminin')."
+
+    elif phase == AgentPhase.GET_AGE:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"Ask {first_name} their age casually, for example: 'And how old are you?' IMPORTANT: Accept numbers written in words (e.g. 'twenty-five' → 25). Valid range: 12–120. If absurd, use humor. As soon as they give a valid age, IMMEDIATELY call save_user_profile(field='age', value=<age as number>)."
+        else:
+            mission = f"Demandez l'âge de {first_name} avec légèreté, par exemple : 'Et vous avez quel âge ?' IMPORTANT : Acceptez les nombres écrits en lettres (ex : 'vingt-cinq' → 25). Plage valide : 12–120 ans. Si l'âge est absurde, utilisez l'humour. Dès qu'il/elle donne un âge valide, appelez IMMÉDIATEMENT save_user_profile(field='age', value=<âge en chiffre>)."
+
+    elif phase == AgentPhase.GET_PREGNANT:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"Ask {first_name} naturally and delicately whether she is pregnant or breastfeeding, as some fragrance ingredients require precautions. For example: 'Just to make sure we create the safest formula for you — are you currently pregnant or breastfeeding?' As soon as she answers, IMMEDIATELY call save_user_profile(field='pregnant', value='oui') or save_user_profile(field='pregnant', value='non')."
+        else:
+            mission = f"Demandez à {first_name} naturellement et avec délicatesse si elle est enceinte ou allaitante, car certains ingrédients demandent des précautions. Par exemple : 'Pour vous garantir la formule la plus sûre — êtes-vous actuellement enceinte ou allaitante ?' Dès qu'elle répond, appelez IMMÉDIATEMENT save_user_profile(field='pregnant', value='oui') ou save_user_profile(field='pregnant', value='non')."
+
+    elif phase == AgentPhase.GET_ALLERGIES:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"Ask {first_name} naturally if they have any allergies or sensitivities to certain ingredients, for example: 'Before we start, do you have any allergies or sensitivities to certain ingredients?' — If NO: IMMEDIATELY call save_user_profile(field='has_allergies', value='non'). — If YES: IMMEDIATELY call save_user_profile(field='has_allergies', value='oui')."
+        else:
+            mission = f"Demandez à {first_name} naturellement s'il/elle a des allergies ou sensibilités particulières, par exemple : 'Avant qu'on commence, est-ce que vous avez des allergies ou des sensibilités à certains ingrédients ?' — Si NON : appelez IMMÉDIATEMENT save_user_profile(field='has_allergies', value='non'). — Si OUI : appelez IMMÉDIATEMENT save_user_profile(field='has_allergies', value='oui')."
+
+    elif phase == AgentPhase.GET_ALLERGY_DETAIL:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"Ask {first_name} which ingredients or substances they are allergic to, for example: 'Of course! Which ingredients or substances are you allergic to?' As soon as they answer, IMMEDIATELY call save_user_profile(field='allergies', value=<the allergies mentioned>)."
+        else:
+            mission = f"Demandez à {first_name} à quels ingrédients ou substances il/elle est allergique, par exemple : 'Bien sûr ! À quels ingrédients ou substances êtes-vous allergique ?' Dès qu'il/elle répond, appelez IMMÉDIATEMENT save_user_profile(field='allergies', value=<les allergies mentionnées>)."
+
+    # ── Phase 2 : Questionnaire ───────────────────────────────────────────
+
+    elif phase == AgentPhase.Q_FAVORITES:
+        q = questions[state.current_question_index]
+        q_num = state.current_question_index + 1
+        choices_str = ", ".join(c["label"] if isinstance(c, dict) else c for c in q.get("choices", []))
+        first_name = state.profile.get("first_name", "")
+
+        click_hint = ""
+        if input_mode == "click":
+            click_hint = (" Before asking, call request_top_2_click(question_id) to signal the interface to show a 'Reply' button." if is_en
+                          else " Avant de poser la question, appelez request_top_2_click(question_id) pour signaler à l'interface d'afficher le bouton 'Répondre'.")
+
+        if is_en:
+            mission = f"""It is now question {q_num} of {num_questions}.
+
+Question (id={q['id']}): "{q['question']}"
+Available choices: {choices_str}
+
+STEP: Ask {first_name} for their 2 FAVORITE choices in ONE natural sentence. Do NOT enumerate the choices aloud — the user can see them on screen.{click_hint}
+
+Once the user gives 2 choices:
+1. Match each choice to the canonical label (accept singular/plural, accents, 'the ...', lowercase: 'campagnes' → 'Campagne', 'forêts' → 'Forêt'). Do NOT ask for clarification for minor variations — just normalize silently.
+2. Call notify_top_2(question_id={q['id']}, top_2=[choice1, choice2]) IMMEDIATELY.
+3. Your mission for this step is complete."""
+        else:
+            mission = f"""C'est maintenant la question {q_num} sur {num_questions}.
+
+Question (id={q['id']}) : "{q['question']}"
+Choix disponibles : {choices_str}
+
+ÉTAPE : Demandez à {first_name} ses 2 choix PRÉFÉRÉS en UNE seule phrase naturelle. Ne lisez JAMAIS les choix à voix haute — l'utilisateur les voit à l'écran.{click_hint}
+
+Une fois que l'utilisateur donne 2 choix :
+1. Faites correspondre silencieusement chaque mot au label canonique le plus proche ('campagnes' → 'Campagne', 'montagnes' → 'Montagne', 'forêts' → 'Forêt', etc.). INTERDIT ABSOLU : ne jamais signaler, corriger, mentionner ou commenter la forme donnée par l'utilisateur. Agissez directement.
+2. Appelez IMMÉDIATEMENT notify_top_2(question_id={q['id']}, top_2=[choix1, choix2]).
+3. Votre mission est terminée."""
+
+    elif phase == AgentPhase.Q_JUSTIFY_FAV_1:
+        q = questions[state.current_question_index]
+        top_2 = state.current_top_2
+        choice = top_2[0] if top_2 else "?"
+        choice2 = top_2[1] if len(top_2) > 1 else "?"
+        if is_en:
+            mission = f"""Ask the user why they like "{choice}". Listen and briefly react naturally. Once the user has answered, IMMEDIATELY call notify_justification_top_2(question_id={q['id']}, choice="{choice2}") to move to the next step."""
+        else:
+            mission = f"""Demandez à l'utilisateur pourquoi il/elle aime "{choice}". Écoutez et rebondissez brièvement de façon naturelle. Une fois que l'utilisateur a répondu, appelez IMMÉDIATEMENT notify_justification_top_2(question_id={q['id']}, choice="{choice2}") pour passer à l'étape suivante."""
+
+    elif phase == AgentPhase.Q_JUSTIFY_FAV_2:
+        q = questions[state.current_question_index]
+        top_2 = state.current_top_2
+        choice = top_2[1] if len(top_2) > 1 else "?"
+        if is_en:
+            mission = f"""Ask the user why they like "{choice}". Listen and briefly react naturally. Once the user has answered, IMMEDIATELY call notify_asking_bottom_2(question_id={q['id']}, top_2={state.current_top_2}) to move to the least liked choices step."""
+        else:
+            mission = f"""Demandez à l'utilisateur pourquoi il/elle aime "{choice}". Écoutez et rebondissez brièvement. Une fois que l'utilisateur a répondu, appelez IMMÉDIATEMENT notify_asking_bottom_2(question_id={q['id']}, top_2={state.current_top_2}) pour passer à l'étape des choix les moins aimés."""
+
+    elif phase == AgentPhase.Q_LEAST:
+        q = questions[state.current_question_index]
+        top_2 = state.current_top_2
+        choices_str = ", ".join(c["label"] if isinstance(c, dict) else c for c in q.get("choices", []))
+
+        click_hint = ""
+        if input_mode == "click":
+            click_hint = (" Before asking, call request_bottom_2_click(question_id) to signal the interface." if is_en
+                          else " Avant de poser la question, appelez request_bottom_2_click(question_id) pour signaler à l'interface.")
+
+        if is_en:
+            mission = f"""Ask the user for their 2 LEAST liked choices from the REMAINING choices (excluding their favorites: {top_2}).{click_hint}
+
+IMPORTANT: Never accept one of {top_2} as a least liked choice. If the user picks one, point it out with humor and ask again.
+
+Once the user gives 2 least liked choices:
+1. Match each to the canonical label (accept singular/plural, accents, lowercase — normalize silently without asking for confirmation).
+2. Call notify_bottom_2(question_id={q['id']}, bottom_2=[choice1, choice2]) IMMEDIATELY.
+3. Your mission is complete."""
+        else:
+            mission = f"""Demandez les 2 choix les MOINS aimés parmi les choix RESTANTS (en excluant les favoris : {top_2}).{click_hint}
+
+IMPORTANT : N'acceptez JAMAIS un choix de {top_2} comme moins aimé. Si l'utilisateur en choisit un, signalez-le avec humour et redemandez.
+
+Une fois que l'utilisateur donne 2 choix :
+1. Faites correspondre silencieusement chaque mot au label canonique le plus proche. INTERDIT ABSOLU : ne jamais signaler, corriger, mentionner ou commenter la forme donnée. Agissez directement.
+2. Appelez IMMÉDIATEMENT notify_bottom_2(question_id={q['id']}, bottom_2=[choix1, choix2]).
+3. Votre mission est terminée."""
+
+    elif phase == AgentPhase.Q_JUSTIFY_LEAST_1:
+        q = questions[state.current_question_index]
+        bottom_2 = state.current_bottom_2
+        choice = bottom_2[0] if bottom_2 else "?"
+        choice2 = bottom_2[1] if len(bottom_2) > 1 else "?"
+        if is_en:
+            mission = f"""In a SINGLE reply, ask the user why they dislike "{choice}". Do NOT split into two messages — react and ask in one sentence (e.g. "Interesting! And why don't you like {choice}?"). Once the user has answered, IMMEDIATELY call notify_justification_bottom_2(question_id={q['id']}, choice="{choice2}") to move to the next step."""
+        else:
+            mission = f"""En UNE SEULE réplique, demandez pourquoi l'utilisateur n'aime pas "{choice}". Ne divisez PAS en deux messages — réagissez et posez la question en une seule phrase (ex : "C'est noté ! Et pourquoi {choice} ne vous plaît-il/elle pas ?"). Une fois que l'utilisateur a répondu, appelez IMMÉDIATEMENT notify_justification_bottom_2(question_id={q['id']}, choice="{choice2}") pour passer à l'étape suivante."""
+
+    elif phase == AgentPhase.Q_JUSTIFY_LEAST_2:
+        q = questions[state.current_question_index]
+        bottom_2 = state.current_bottom_2
+        choice = bottom_2[1] if len(bottom_2) > 1 else "?"
+        top_2 = state.current_top_2
+        if is_en:
+            mission = f"""Ask the user why they dislike "{choice}". Listen and briefly react. Once the user has answered, IMMEDIATELY call notify_awaiting_confirmation(question_id={q['id']}, top_2={top_2}, bottom_2={bottom_2}) to move to the confirmation step."""
+        else:
+            mission = f"""Demandez pourquoi l'utilisateur n'aime pas "{choice}". Écoutez et rebondissez brièvement. Une fois que l'utilisateur a répondu, appelez IMMÉDIATEMENT notify_awaiting_confirmation(question_id={q['id']}, top_2={top_2}, bottom_2={bottom_2}) pour passer à la confirmation."""
+
+    elif phase == AgentPhase.Q_CONFIRM:
+        q = questions[state.current_question_index]
+        top_2 = state.current_top_2
+        bottom_2 = state.current_bottom_2
+        if is_en:
+            mission = f"""Summarize the user's choices conversationally: "So if I recap: your favorites are {top_2[0] if top_2 else '?'} and {top_2[1] if len(top_2) > 1 else '?'}, and the ones you like least are {bottom_2[0] if bottom_2 else '?'} and {bottom_2[1] if len(bottom_2) > 1 else '?'}. Is that right?"
+
+— If user CONFIRMS: Call IMMEDIATELY save_answer(question_id={q['id']}, question_text="{q['question']}", top_2={top_2}, bottom_2={bottom_2}).
+— If user wants to MODIFY: Ask what they'd like to change, update the choices, redo the summary, and wait for confirmation. Only call save_answer after explicit confirmation."""
+        else:
+            mission = f"""Récapitulez les choix de l'utilisateur de façon conversationnelle : "D'accord, donc si je résume : vos coups de cœur c'est {top_2[0] if top_2 else '?'} et {top_2[1] if len(top_2) > 1 else '?'}, et ceux qui vous parlent le moins c'est {bottom_2[0] if bottom_2 else '?'} et {bottom_2[1] if len(bottom_2) > 1 else '?'}. C'est bien ça ?"
+
+— Si l'utilisateur CONFIRME : Appelez IMMÉDIATEMENT save_answer(question_id={q['id']}, question_text="{q['question']}", top_2={top_2}, bottom_2={bottom_2}).
+— Si l'utilisateur veut MODIFIER : Demandez ce qu'il veut changer, mettez à jour les choix, refaites le récapitulatif et attendez la confirmation. N'appelez save_answer qu'après confirmation explicite."""
+
+    # ── Phase 3 : Formules ────────────────────────────────────────────────
+
+    elif phase == AgentPhase.INTENSITY:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"""FIRST action (before speaking): call notify_asking_intensity(). Then in ONE reply, ask {first_name} their fragrance intensity preference: "Before I create your formulas — do you prefer fragrances that are rather fresh and light, powerful and intense, or a mix of both?" Wait for their answer. Once they answer, call generate_formulas(formula_type=...) with 'frais', 'puissant' or 'mix'. If unsure, recommend 'mix' and call generate_formulas(formula_type='mix')."""
+        else:
+            mission = f"""PREMIÈRE action (avant de parler) : appelez notify_asking_intensity(). Puis en UNE SEULE réplique, demandez à {first_name} sa préférence d'intensité : "Avant de créer vos formules — vous préférez des parfums plutôt frais et légers, plutôt puissants et intenses, ou un mix des deux ?" Attendez sa réponse. Une fois qu'il/elle répond, appelez generate_formulas(formula_type=...) avec 'frais', 'puissant' ou 'mix'. Si indécis, recommandez 'mix' et appelez generate_formulas(formula_type='mix')."""
+
+    elif phase == AgentPhase.PRESENT_FORMULAS:
+        first_name = state.profile.get("first_name", "")
+        if is_en:
+            mission = f"""Present the 2 generated perfume formulas to {first_name} with enthusiasm. For each formula:
+1. The profile name (e.g. "Your first formula is called The Influencer!")
+2. A short description of the profile in your own words
+3. An atmospheric description of the overall scent (mood, occasion, feeling) — do NOT enumerate notes one by one
+4. Mention it's available in 3 sizes: 10ml, 30ml, 50ml
+
+Then ask which formula they prefer. Once the user clearly chooses one, call IMMEDIATELY select_formula(formula_index=0) for the first or select_formula(formula_index=1) for the second.
+
+If the user wants to change intensity before choosing: call generate_formulas(formula_type=new_type) again, present the 2 new formulas, then wait for selection."""
+        else:
+            mission = f"""Présentez les 2 formules de parfum générées à {first_name} avec enthousiasme. Pour chaque formule :
+1. Le nom du profil (ex : "Votre première formule s'appelle The Influencer !")
+2. Une courte description du profil en vos propres mots
+3. Une description atmosphérique globale du parfum (humeur, occasion, sensation) — ne listez PAS les notes une par une
+4. Mentionnez qu'elle est disponible en 3 formats : 10ml, 30ml et 50ml
+
+Demandez ensuite laquelle l'utilisateur préfère. Dès qu'il/elle choisit clairement, appelez IMMÉDIATEMENT select_formula(formula_index=0) pour la première ou select_formula(formula_index=1) pour la deuxième.
+
+Si l'utilisateur veut changer d'intensité avant de choisir : appelez generate_formulas(formula_type=nouveau_type), présentez les 2 nouvelles formules, puis attendez la sélection."""
+
+    # ── Phase 4 : Personnalisation / Découverte ───────────────────────────
+
+    elif phase == AgentPhase.CUSTOMIZATION:
+        first_name = state.profile.get("first_name", "")
+        mode = config.get("mode", "guided")
+
+        if mode == "discovery":
+            if is_en:
+                mission = f"""You are now in the discovery & customization phase with {first_name}.
+
+**First reply after formula selection:** Talk about the chosen formula with enthusiasm — describe its character, what makes it unique, its olfactory atmosphere.
+
+**Exploratory questions (2 to 4, MANDATORY, ONE AT A TIME):**
+The FIRST question is ALWAYS: what motivated them to create this fragrance? Ask openly: "So, what brought you here to create your own fragrance today?"
+
+Adapt the following questions based on their answer:
+— Professional project (brand, event, gift): explore the desired image, atmosphere, use case
+— Personal project (signature scent, gift): explore who it's for, daily vs. special occasions
+— Unclear: gently clarify
+
+Weave the formula naturally into the conversation (profile name, notes, atmosphere).
+Rules: ONE question at a time. Answers not mandatory. Do NOT save answers. Max 4 questions total.
+
+**Customization (available at any time):**
+If the user wants to replace a note:
+1. Call get_available_ingredients(note_type) FIRST — never invent suggestions
+2. Suggest 2-3 alternatives that complement the formula, explain why each works
+3. Once user confirms, call replace_note(note_type, old_note, new_note)
+4. User can make multiple replacements
+
+**If user wants to change formula type:** call change_formula_type(formula_type=...) — this replaces the current formula directly, stay in this phase.
+
+**Transition to standby:** Once questions are done and user is satisfied, ask "Any questions about your formula or ingredients?" If no more questions, say ONE short farewell sentence then IMMEDIATELY call enter_pause_mode(). Do NOT mention any wake phrase. If the user says "thank you", "goodbye", or anything similar after your farewell — call enter_pause_mode() immediately without saying anything more."""
+            else:
+                mission = f"""Vous entrez dans la phase de découverte & personnalisation avec {first_name}.
+
+**Première réplique après sélection :** Parlez de la formule choisie avec enthousiasme — décrivez son caractère, son ambiance olfactive à partir de ses vraies notes et de son profil.
+
+**Questions exploratoires (2 à 4, OBLIGATOIRES, UNE PAR UNE) :**
+La PREMIÈRE question est TOUJOURS : qu'est-ce qui a motivé l'utilisateur à créer son parfum ? Posez-la de façon ouverte : "Au fait, qu'est-ce qui vous a amené(e) à vouloir créer votre propre parfum ?"
+
+Adaptez les questions suivantes en fonction de la réponse :
+— Projet professionnel (marque, événement, cadeau client) : explorez l'image désirée, l'atmosphère, l'usage
+— Projet personnel (parfum signature, cadeau) : explorez pour qui, usage quotidien vs occasions spéciales
+— Flou ou mixte : relancez doucement
+
+Intégrez naturellement la formule dans la conversation (nom du profil, notes, ambiance).
+Règles : UNE question à la fois. Réponses non obligatoires. Ne sauvegardez AUCUNE réponse. Max 4 questions au total.
+
+**Personnalisation (disponible à tout moment) :**
+Si l'utilisateur veut remplacer une note :
+1. Appelez TOUJOURS get_available_ingredients(note_type) EN PREMIER — n'inventez jamais de suggestions
+2. Proposez 2-3 alternatives qui complètent la formule, expliquez pourquoi chacune fonctionne
+3. Une fois que l'utilisateur confirme, appelez replace_note(note_type, old_note, new_note)
+4. L'utilisateur peut faire plusieurs remplacements
+
+**Si l'utilisateur veut changer le type de formule :** appelez change_formula_type(formula_type=...) — cela remplace la formule directement, restez dans cette phase.
+
+**Transition vers la veille :** Une fois les questions posées et l'utilisateur satisfait, demandez "Avez-vous des questions sur votre formule ou les ingrédients ?" Si plus de questions, dites UNE courte phrase d'au revoir puis appelez IMMÉDIATEMENT enter_pause_mode(). Ne mentionnez AUCUNE phrase de réveil vocal. Si l'utilisateur dit "merci", "au revoir" ou quoi que ce soit après votre au revoir — appelez enter_pause_mode() immédiatement sans rien dire de plus."""
+        else:
+            # guided mode
+            if is_en:
+                mission = f"""You are now in customization mode with {first_name}. The frontend shows only their selected formula.
+
+You are a perfumery expert helping them personalize their formula. They can:
+- Ask questions about any note (what it smells like, why it was chosen, etc.)
+- Request to replace a note they don't like
+- Ask for recommendations and advice
+
+**Customization rules:**
+1. Call get_available_ingredients(note_type) FIRST before suggesting alternatives — never invent
+2. Suggest 2-3 options that complement the formula, explain why
+3. Once user confirms, call replace_note(note_type, old_note, new_note)
+4. Multiple replacements are allowed
+
+**If user wants to change formula type:** call change_formula_type(formula_type=...)
+
+**Transition to standby:** When the user is satisfied, deliver a warm farewell (e.g. "It was a pleasure! Have a wonderful fragrant day!") then IMMEDIATELY call enter_pause_mode(). Do NOT mention any wake phrase or voice command."""
+            else:
+                mission = f"""Vous entrez en mode personnalisation avec {first_name}. Le frontend n'affiche plus que la formule sélectionnée.
+
+Vous êtes un expert en parfumerie qui aide l'utilisateur à personnaliser sa formule. Il/elle peut :
+- Poser des questions sur n'importe quelle note (à quoi ça sent, pourquoi elle a été choisie, etc.)
+- Demander à remplacer une note qu'il/elle n'aime pas
+- Demander des recommandations et des conseils
+
+**Règles de personnalisation :**
+1. Appelez TOUJOURS get_available_ingredients(note_type) EN PREMIER avant de proposer des alternatives — n'inventez jamais
+2. Proposez 2-3 options qui complètent la formule, expliquez pourquoi
+3. Une fois que l'utilisateur confirme, appelez replace_note(note_type, old_note, new_note)
+4. Plusieurs remplacements sont autorisés
+
+**Si l'utilisateur veut changer le type de formule :** appelez change_formula_type(formula_type=...)
+
+**Transition vers la veille :** Quand l'utilisateur est satisfait, dites UNE courte phrase d'au revoir puis appelez IMMÉDIATEMENT enter_pause_mode(). Ne mentionnez AUCUNE phrase de réveil vocal. Si l'utilisateur dit "merci", "au revoir" ou quoi que ce soit après votre au revoir — appelez enter_pause_mode() immédiatement sans rien dire de plus."""
+
+    elif phase == AgentPhase.STANDBY:
+        if is_en:
+            mission = """You are in standby mode. The user has clicked the button to ask a question. Greet them warmly: 'I'm all ears, what's your question?' Answer as a perfumery expert. Then ask 'Any more questions?'
+
+CRITICAL RULE: As soon as the user says no, says thank you, says goodbye, or expresses satisfaction in any way — say ONE short farewell sentence (e.g. "Have a wonderful day!") and IMMEDIATELY call enter_pause_mode(). Do NOT respond to any further messages after that. If the user says anything after your farewell, IMMEDIATELY call enter_pause_mode() without saying anything."""
+        else:
+            mission = """Vous êtes en mode veille. L'utilisateur a cliqué sur le bouton pour poser une question. Accueillez-le chaleureusement : 'Je vous écoute, quelle est votre question ?' Répondez en expert parfumeur. Puis demandez 'D'autres questions ?'
+
+RÈGLE CRITIQUE : Dès que l'utilisateur dit non, dit merci, dit au revoir, ou exprime sa satisfaction de quelque manière que ce soit — dites UNE courte phrase d'au revoir (ex : "Belle journée !") et appelez IMMÉDIATEMENT enter_pause_mode(). Ne répondez à AUCUN message supplémentaire après ça. Si l'utilisateur dit quoi que ce soit après votre au revoir, appelez IMMÉDIATEMENT enter_pause_mode() sans rien dire."""
+
+    else:
+        mission = "Continue naturally." if is_en else "Continuez naturellement."
+
+    return f"{personality}\n\n--- MISSION ACTUELLE ---\n\n{mission}"
+
+
+# ─────────────────────────────────────────────
+# Entrypoint
+# ─────────────────────────────────────────────
+
 async def entrypoint(ctx: JobContext):
+    import time as _time
 
-    print("Agent started")
+    logger.info(f"[JOB] ✅ Job reçu — room={ctx.room.name} job_id={ctx.job.id} PID={os.getpid()} at {_time.time():.3f}")
+    logger.debug(f"[JOB] Détails job: {ctx.job}")
 
-    await ctx.connect()
+    logger.info("[CONNECT] Connexion à la room LiveKit...")
+    try:
+        await ctx.connect()
+        logger.info(f"[CONNECT] ✅ Connecté à la room {ctx.room.name} — participants: {len(ctx.room.remote_participants)}")
+    except Exception as e:
+        logger.exception(f"[CONNECT] ❌ Erreur connexion room: {e}")
+        return
 
     session_id = ctx.room.name.replace("room_", "")
+    logger.info(f"[SESSION_ID] session_id={session_id}")
 
     http = httpx.AsyncClient(base_url=settings.backend_url, timeout=30.0)
+    logger.info(f"[HTTP] Récupération session depuis {settings.backend_url}/api/session/{session_id}")
 
     for attempt in range(5):
-        resp = await http.get(f"/api/session/{session_id}")
-        if resp.status_code == 200:
-            break
-        print(f"Session {session_id} not ready yet (attempt {attempt + 1}/5, HTTP {resp.status_code}), retrying...")
+        try:
+            resp = await http.get(f"/api/session/{session_id}")
+            logger.info(f"[HTTP] Tentative {attempt + 1}/5 — status={resp.status_code}")
+            if resp.status_code == 200:
+                break
+            logger.warning(f"[HTTP] Session {session_id} pas encore prête (attempt {attempt + 1}/5)")
+        except Exception as e:
+            logger.error(f"[HTTP] Tentative {attempt + 1}/5 — Erreur réseau: {e}")
         await asyncio.sleep(1.0)
     else:
-        print(f"Session {session_id} not found after 5 attempts, agent exiting.")
+        logger.error(f"[HTTP] ❌ Session {session_id} introuvable après 5 tentatives — agent abandonne.")
         await http.aclose()
         return
 
     config = resp.json()
+    logger.info(f"[SESSION] Config reçue — language={config.get('language')} mode={config.get('mode')} input_mode={config.get('input_mode')} questions={len(config.get('questions', []))}")
 
     if "language" not in config or "questions" not in config:
-        print(f"Session {session_id} has incomplete data, agent exiting.")
+        logger.error(f"[SESSION] ❌ Données incomplètes — clés reçues: {list(config.keys())}")
         await http.aclose()
         return
 
-    print("Agent connected:", ctx.room.name)
+    logger.info(f"[SESSION] ✅ Session valide, démarrage de l'agent — room={ctx.room.name}")
 
-    # Build question list for the LLM instructions
     is_en = config.get("language", "fr") == "en"
-    if is_en:
-        questions_text = "\n".join(
-            f"- Question {i+1} (id={q['id']}): \"{q['question']}\" — Available choices: {', '.join(c['label'] if isinstance(c, dict) else c for c in q['choices'])}"
-            for i, q in enumerate(config["questions"])
-        )
-    else:
-        questions_text = "\n".join(
-            f"- Question {i+1} (id={q['id']}): \"{q['question']}\" — Choix possibles: {', '.join(c['label'] if isinstance(c, dict) else c for c in q['choices'])}"
-            for i, q in enumerate(config["questions"])
-        )
-
     voice_gender = config.get("voice_gender", "female")
     ai_name = "Rose" if voice_gender == "female" else "Florian"
+    input_mode = config.get("input_mode", "voice")
     use_avatar = [config.get("avatar", True)]
-    input_mode = config.get("input_mode", "voice")  # "voice" | "click"
-
-    # --- Standby / pause mode state ---
-    paused = [False]
-    # --- Manual interrupt state (user stopped the agent mid-speech) ---
-    user_interrupted = [False]
-    # Flag to track if this is the first TTS call (the greeting).
-    # On first call we prepend warmup silence so the Bey avatar DataStream audio
-    # pipeline has time to initialise before real speech arrives.
     _first_tts_call = [True]
 
-    class PausableAgent(Agent):
-        """Agent subclass that blocks llm_node while in standby mode."""
+    # Machine à états
+    state = SessionState()
 
+    # Flags de contrôle
+    paused = [False]
+    user_interrupted = [False]
+
+    # ─── Sous-classe agent avec override TTS et LLM ───────────────────────
+
+    class StatefulAgent(Agent):
         def llm_node(self, chat_ctx, tools, model_settings):
             if paused[0]:
-                return None  # stay silent in standby
+                return None
             return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
 
         async def tts_node(self, text, model_settings):
             import time
             tts_call_id = id(text) % 100000
-            print(f"[TTS_NODE:{tts_call_id}] called at {time.time():.3f}")
+            logger.debug(f"[TTS_NODE:{tts_call_id}] called at {time.time():.3f}")
 
             sample_rate = 24000
-            samples_per_channel = 480  # 20ms per frame at 24kHz
-            silence_data = bytes(samples_per_channel * 2)  # 16-bit PCM, mono
+            samples_per_channel = 480
+            silence_data = bytes(samples_per_channel * 2)
 
-            # On the very first TTS call (the greeting), prepend 2s of silence so that
-            # the Bey avatar DataStream audio pipeline has time to fully initialise
-            # before real speech arrives. Under bad network conditions Bey's pipeline
-            # needs more time; without this the greeting audio is silently dropped and
-            # playback_finished never fires, leaving the agent hanging.
             if use_avatar[0] and _first_tts_call[0]:
                 _first_tts_call[0] = False
-                warmup_frames = 100  # 100 × 20ms = 2s
-                print(f"[TTS_NODE:{tts_call_id}] prepending {warmup_frames * 20}ms warmup silence at {time.time():.3f}")
+                warmup_frames = 100
+                logger.debug(f"[TTS_NODE:{tts_call_id}] prepending {warmup_frames * 20}ms warmup silence")
                 for _ in range(warmup_frames):
                     yield rtc.AudioFrame(
                         data=silence_data,
@@ -130,38 +532,29 @@ async def entrypoint(ctx: JobContext):
                         num_channels=1,
                         samples_per_channel=samples_per_channel,
                     )
-                print(f"[TTS_NODE:{tts_call_id}] warmup silence done, starting real TTS at {time.time():.3f}")
 
             frame_count = 0
-            # Yield all real TTS audio frames from Cartesia.
-            # Wrap in try/except so a Cartesia error (rate limit, dropped WebSocket,
-            # invalid voice ID, etc.) doesn't leave the agent stuck in "thinking" state.
             try:
                 async for frame in Agent.default.tts_node(self, text, model_settings):
                     if frame_count == 0:
-                        print(f"[TTS_NODE:{tts_call_id}] FIRST real audio frame at {time.time():.3f}")
+                        logger.debug(f"[TTS_NODE:{tts_call_id}] FIRST real audio frame at {time.time():.3f}")
                     frame_count += 1
                     yield frame
             except Exception as e:
-                print(f"[TTS_NODE:{tts_call_id}] TTS error (Cartesia): {e}")
-                # Fall through to the silence padding so the audio stream closes
-                # cleanly and the agent transitions out of "thinking" state.
-
-            print(f"[TTS_NODE:{tts_call_id}] Cartesia done — {frame_count} frames at {time.time():.3f}, appending trailing silence")
+                logger.error(f"[TTS_NODE:{tts_call_id}] TTS error (Cartesia): {e}")
 
             if use_avatar[0]:
-                # Append 500ms of silence so the last audio chunk is fully flushed
-                # through the Bey avatar rendering pipeline before the stream closes.
-                for _ in range(25):  # 25 × 20ms = 500ms
+                for _ in range(25):
                     yield rtc.AudioFrame(
                         data=silence_data,
                         sample_rate=sample_rate,
                         num_channels=1,
                         samples_per_channel=samples_per_channel,
                     )
-            print(f"[TTS_NODE:{tts_call_id}] trailing silence done at {time.time():.3f}")
+            logger.debug(f"[TTS_NODE:{tts_call_id}] done — {frame_count} frames")
 
-    # Helper to send state updates to the frontend via LiveKit Data Channel
+    # ─── Envoi d'état au frontend ──────────────────────────────────────────
+
     async def send_state_update(payload: dict):
         try:
             await ctx.room.local_participant.publish_data(
@@ -170,41 +563,150 @@ async def entrypoint(ctx: JobContext):
                 reliable=True,
             )
         except Exception:
-            # Room engine may already be closed (e.g. user disconnected while
-            # the agent was still finishing TTS). Silently ignore.
             pass
 
-    # Define the save_user_profile tool for collecting user info before the questionnaire
+    # ─── Avancement d'état ─────────────────────────────────────────────────
+
+    async def advance_to(new_phase: AgentPhase) -> str:
+        old = state.phase
+        state.phase = new_phase
+        logger.info(f"[STATE] {old.name} → {new_phase.name}")
+        prompt = get_prompt(state, config, ai_name, is_en, input_mode)
+        await agent.update_instructions(prompt)
+        # Return a minimal acknowledgment — the LLM will generate its reply
+        # from the updated system instructions, not from this tool result
+        return "[ok]"
+
+    # ─── Function tools ────────────────────────────────────────────────────
+
     @function_tool()
     async def save_user_profile(field: str, value: str):
-        """Saves a user profile field (first_name, gender, age, has_allergies, allergies). Call this function as soon as the user provides a profile detail. / Sauvegarde une information du profil utilisateur. Appelle cette fonction dès que l'utilisateur donne une information de profil."""
+        """Saves a user profile field. Call immediately when user provides: first_name, gender, age, pregnant, has_allergies, or allergies. / Sauvegarde un champ du profil utilisateur. Appeler immédiatement quand l'utilisateur fournit : first_name, gender, age, pregnant, has_allergies ou allergies."""
         resp = await http.post(
             f"/api/session/{session_id}/save-profile",
             json={"field": field, "value": value},
         )
-        data = resp.json()
+        data = resp.json() if resp.status_code == 200 else {}
+        state.profile[field] = value
+        logger.info(f"[PROFILE] Saved {field}={value} — state={state.phase.name}")
+
         await send_state_update({
             "type": "profile_update",
-            "state": data["state"],
+            "state": data.get("state", "collecting_profile"),
             "field": field,
             "value": value,
-            "profile_complete": data["profile_complete"],
-            "missing_fields": data["missing_fields"],
+            "profile_complete": data.get("profile_complete", False),
+            "missing_fields": data.get("missing_fields", []),
         })
-        if data["profile_complete"]:
-            await send_state_update({
-                "type": "state_change",
-                "state": "questionnaire",
-            })
+
+        # Transitions d'état selon le champ sauvegardé — retourne le prompt suivant
+        if field == "first_name":
+            return await advance_to(AgentPhase.GET_GENDER)
+        elif field == "gender":
+            return await advance_to(AgentPhase.GET_AGE)
+        elif field == "age":
+            if state.profile.get("gender", "").lower() in ("féminin", "feminin", "female", "f"):
+                return await advance_to(AgentPhase.GET_PREGNANT)
+            else:
+                return await advance_to(AgentPhase.GET_ALLERGIES)
+        elif field == "pregnant":
+            return await advance_to(AgentPhase.GET_ALLERGIES)
+        elif field == "has_allergies":
+            if value.lower() in ("oui", "yes"):
+                return await advance_to(AgentPhase.GET_ALLERGY_DETAIL)
+            else:
+                await send_state_update({"type": "state_change", "state": "questionnaire"})
+                return await advance_to(AgentPhase.Q_FAVORITES)
+        elif field == "allergies":
+            await send_state_update({"type": "state_change", "state": "questionnaire"})
+            return await advance_to(AgentPhase.Q_FAVORITES)
+
         if is_en:
             return f"Profile updated: {field} = {value}"
-        return f"Profil mis à jour: {field} = {value}"
+        return f"Profil mis à jour : {field} = {value}"
 
-    # ── Step-by-step questionnaire progress events ──────────────────────────
+    @function_tool()
+    async def notify_top_2(question_id: int, top_2: list[str]):
+        """Notifies the frontend of the 2 favorite choices. Call IMMEDIATELY after identifying the 2 favorites. / Notifie le frontend des 2 choix préférés. Appeler IMMÉDIATEMENT après avoir identifié les 2 favoris."""
+        state.current_top_2 = top_2
+        logger.info(f"[Q] notify_top_2 q={question_id} top_2={top_2}")
+        await send_state_update({
+            "type": "top_2_selected",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "top_2": top_2,
+        })
+        return await advance_to(AgentPhase.Q_JUSTIFY_FAV_1)
+
+    @function_tool()
+    async def notify_justification_top_2(question_id: int, choice: str):
+        """Call AFTER the user answers why they liked their first favorite, to move to the second justification. / Appeler APRÈS que l'utilisateur a répondu sur le premier favori, pour passer à la justification du second."""
+        logger.info(f"[Q] notify_justification_top_2 q={question_id} choice={choice}")
+        await send_state_update({
+            "type": "step_justification_top_2",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "choice": choice,
+        })
+        return await advance_to(AgentPhase.Q_JUSTIFY_FAV_2)
+
+    @function_tool()
+    async def notify_bottom_2(question_id: int, bottom_2: list[str]):
+        """Notifies the frontend of the 2 least liked choices. Call IMMEDIATELY after identifying the 2 least liked. / Notifie le frontend des 2 choix les moins aimés. Appeler IMMÉDIATEMENT après avoir identifié les 2 moins aimés."""
+        state.current_bottom_2 = bottom_2
+        logger.info(f"[Q] notify_bottom_2 q={question_id} bottom_2={bottom_2}")
+        await send_state_update({
+            "type": "bottom_2_selected",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "bottom_2": bottom_2,
+        })
+        return await advance_to(AgentPhase.Q_JUSTIFY_LEAST_1)
+
+    @function_tool()
+    async def notify_asking_bottom_2(question_id: int, top_2: list[str]):
+        """Call RIGHT BEFORE asking the user for their 2 least liked choices. / Appeler JUSTE AVANT de demander les 2 choix les moins aimés."""
+        state.current_top_2 = top_2
+        logger.info(f"[Q] notify_asking_bottom_2 q={question_id} top_2={top_2}")
+        await send_state_update({
+            "type": "step_asking_bottom_2",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "top_2": top_2,
+        })
+        return await advance_to(AgentPhase.Q_LEAST)
+
+    @function_tool()
+    async def notify_justification_bottom_2(question_id: int, choice: str):
+        """Call AFTER the user answers why they disliked their first least liked choice, to move to the second. / Appeler APRÈS que l'utilisateur a répondu sur le premier moins aimé, pour passer à la justification du second."""
+        logger.info(f"[Q] notify_justification_bottom_2 q={question_id} choice={choice}")
+        await send_state_update({
+            "type": "step_justification_bottom_2",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "choice": choice,
+        })
+        return await advance_to(AgentPhase.Q_JUSTIFY_LEAST_2)
+
+    @function_tool()
+    async def notify_awaiting_confirmation(question_id: int, top_2: list[str], bottom_2: list[str]):
+        """Call AFTER the user answers why they disliked their second least liked choice, to move to confirmation. / Appeler APRÈS la dernière justification pour passer à la confirmation."""
+        state.current_top_2 = top_2
+        state.current_bottom_2 = bottom_2
+        logger.info(f"[Q] notify_awaiting_confirmation q={question_id} top={top_2} bot={bottom_2}")
+        await send_state_update({
+            "type": "step_awaiting_confirmation",
+            "state": "questionnaire",
+            "question_id": question_id,
+            "top_2": top_2,
+            "bottom_2": bottom_2,
+        })
+        return await advance_to(AgentPhase.Q_CONFIRM)
 
     @function_tool()
     async def notify_asking_top_2(question_id: int):
-        """Call this ONCE, RIGHT BEFORE asking the user for their 2 favorite choices (Step A). / Appelle cette fonction UNE SEULE FOIS, JUSTE AVANT de demander les 2 choix préférés (Étape A)."""
+        """Call ONCE, RIGHT BEFORE asking the user for their 2 favorite choices. / Appeler UNE SEULE FOIS, JUSTE AVANT de demander les 2 choix préférés."""
+        logger.info(f"[Q] notify_asking_top_2 q={question_id}")
         await send_state_update({
             "type": "step_asking_top_2",
             "state": "questionnaire",
@@ -215,102 +717,24 @@ async def entrypoint(ctx: JobContext):
         return "Frontend notifié : demande des 2 favoris."
 
     @function_tool()
-    async def notify_justification_top_1(question_id: int, choice: str):
-        """Call this RIGHT BEFORE asking why the user likes their FIRST favorite choice (Step A, step 3). / Appelle cette fonction JUSTE AVANT de demander pourquoi l'utilisateur aime son PREMIER choix préféré (Étape A, étape 3)."""
+    async def notify_asking_intensity():
+        """Call ONCE, RIGHT BEFORE asking the user their fragrance intensity preference. / Appeler UNE SEULE FOIS, JUSTE AVANT de demander la préférence d'intensité."""
+        logger.info("[STATE] notify_asking_intensity")
         await send_state_update({
-            "type": "step_justification_top_1",
+            "type": "step_asking_intensity",
             "state": "questionnaire",
-            "question_id": question_id,
-            "choice": choice,
         })
         if is_en:
-            return f"Frontend notified: asking justification for top choice 1 ({choice})."
-        return f"Frontend notifié : demande justification favori 1 ({choice})."
+            return "Frontend notified: asking intensity preference."
+        return "Frontend notifié : demande de préférence d'intensité."
 
-    @function_tool()
-    async def notify_justification_top_2(question_id: int, choice: str):
-        """Call this RIGHT BEFORE asking why the user likes their SECOND favorite choice (Step A, step 4). / Appelle cette fonction JUSTE AVANT de demander pourquoi l'utilisateur aime son DEUXIÈME choix préféré (Étape A, étape 4)."""
-        await send_state_update({
-            "type": "step_justification_top_2",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "choice": choice,
-        })
-        if is_en:
-            return f"Frontend notified: asking justification for top choice 2 ({choice})."
-        return f"Frontend notifié : demande justification favori 2 ({choice})."
-
-    @function_tool()
-    async def notify_asking_bottom_2(question_id: int, top_2: list[str]):
-        """Call this RIGHT BEFORE asking the user for their 2 least liked choices (Step B, step 5). / Appelle cette fonction JUSTE AVANT de demander les 2 choix les moins aimés (Étape B, étape 5)."""
-        await send_state_update({
-            "type": "step_asking_bottom_2",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "top_2": top_2,
-        })
-        if is_en:
-            return "Frontend notified: asking for bottom 2."
-        return "Frontend notifié : demande des 2 moins aimés."
-
-    @function_tool()
-    async def notify_justification_bottom_1(question_id: int, choice: str):
-        """Call this RIGHT BEFORE asking why the user dislikes their FIRST least liked choice (Step B, step 6). / Appelle cette fonction JUSTE AVANT de demander pourquoi l'utilisateur n'aime pas son PREMIER choix le moins aimé (Étape B, étape 6)."""
-        await send_state_update({
-            "type": "step_justification_bottom_1",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "choice": choice,
-        })
-        if is_en:
-            return f"Frontend notified: asking justification for bottom choice 1 ({choice})."
-        return f"Frontend notifié : demande justification moins aimé 1 ({choice})."
-
-    @function_tool()
-    async def notify_justification_bottom_2(question_id: int, choice: str):
-        """Call this RIGHT BEFORE asking why the user dislikes their SECOND least liked choice (Step B, step 7). / Appelle cette fonction JUSTE AVANT de demander pourquoi l'utilisateur n'aime pas son DEUXIÈME choix le moins aimé (Étape B, étape 7)."""
-        await send_state_update({
-            "type": "step_justification_bottom_2",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "choice": choice,
-        })
-        if is_en:
-            return f"Frontend notified: asking justification for bottom choice 2 ({choice})."
-        return f"Frontend notifié : demande justification moins aimé 2 ({choice})."
-
-    @function_tool()
-    async def notify_awaiting_confirmation(question_id: int, top_2: list[str], bottom_2: list[str]):
-        """Call this RIGHT BEFORE reading the summary and asking the user to confirm their choices (Step C, step 8). / Appelle cette fonction JUSTE AVANT de lire le récapitulatif et demander la confirmation (Étape C, étape 8)."""
-        await send_state_update({
-            "type": "step_awaiting_confirmation",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "top_2": top_2,
-            "bottom_2": bottom_2,
-        })
-        if is_en:
-            return f"Frontend notified: awaiting confirmation for question {question_id} — top: {top_2}, bottom: {bottom_2}."
-        return f"Frontend notifié : en attente de confirmation question {question_id} — favoris: {top_2}, moins aimés: {bottom_2}."
-
-    # ── Notify the frontend of the user's 2 favorite choices (hides those cards) ──
-    @function_tool()
-    async def notify_top_2(question_id: int, top_2: list[str]):
-        """Notifies the frontend of the user's 2 favorite choices for the current question. Call this IMMEDIATELY after identifying the 2 favorites, BEFORE asking for the least liked. / Notifie le frontend des 2 choix préférés de l'utilisateur. Appelle cette fonction IMMÉDIATEMENT après avoir identifié les 2 favoris, AVANT de demander les moins aimés."""
-        await send_state_update({
-            "type": "top_2_selected",
-            "state": "questionnaire",
-            "question_id": question_id,
-            "top_2": top_2,
-        })
-        if is_en:
-            return f"Frontend notified: favorites for question {question_id} are {top_2}"
-        return f"Frontend notifié: favoris pour la question {question_id} sont {top_2}"
-
-    # Define the save_answer tool for the LLM to call
     @function_tool()
     async def save_answer(question_id: int, question_text: str, top_2: list[str], bottom_2: list[str]):
-        """Saves the user's choices for a question. Call ONLY after user confirmation, with 2 favorite choices (top_2) and 2 least liked (bottom_2). Do NOT save justifications. / Sauvegarde les choix de l'utilisateur pour une question. Appelle cette fonction UNIQUEMENT après confirmation."""
+        """Saves the user's confirmed choices for a question. Call ONLY after explicit user confirmation. / Sauvegarde les choix confirmés pour une question. Appeler UNIQUEMENT après confirmation explicite."""
+        if state.phase != AgentPhase.Q_CONFIRM:
+            logger.warning(f"[Q] save_answer appelé en dehors de Q_CONFIRM (state={state.phase.name}) — ignoré")
+            return "Error: cannot save answer in current state." if is_en else "Erreur : impossible de sauvegarder dans l'état actuel."
+
         resp = await http.post(
             f"/api/session/{session_id}/save-answer",
             json={
@@ -321,8 +745,14 @@ async def entrypoint(ctx: JobContext):
             },
         )
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Incomplete profile' if is_en else 'Profil incomplet')
+            detail = resp.json().get("detail", "Error" if is_en else "Erreur")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
+
+        state.answers_saved += 1
+        state.current_top_2 = []
+        state.current_bottom_2 = []
+        logger.info(f"[Q] Answer saved q={question_id} ({state.answers_saved}/{len(config['questions'])})")
+
         await send_state_update({
             "type": "answer_saved",
             "state": "questionnaire",
@@ -330,35 +760,27 @@ async def entrypoint(ctx: JobContext):
             "top_2": top_2,
             "bottom_2": bottom_2,
         })
-        if is_en:
-            return f"Answer saved: question {question_id} — favorites: {top_2}, least liked: {bottom_2}"
-        return f"Réponse sauvegardée: question {question_id} — préférés: {top_2}, moins aimés: {bottom_2}"
 
-    @function_tool()
-    async def notify_asking_intensity():
-        """Call this ONCE, RIGHT BEFORE asking the user their fragrance intensity preference (frais/mix/puissant). Signals the frontend to hide the questionnaire cards. / Appelle cette fonction UNE SEULE FOIS, JUSTE AVANT de demander la préférence d'intensité (frais/mix/puissant). Signale au frontend de masquer les cartes du questionnaire."""
-        await send_state_update({
-            "type": "step_asking_intensity",
-            "state": "questionnaire",
-        })
-        if is_en:
-            return "Frontend notified: asking fragrance intensity preference."
-        return "Frontend notifié : demande de préférence d'intensité."
+        # Avancer à la question suivante ou à la phase intensité
+        num_questions = len(config["questions"])
+        if state.current_question_index + 1 < num_questions:
+            state.current_question_index += 1
+            return await advance_to(AgentPhase.Q_FAVORITES)
+        else:
+            return await advance_to(AgentPhase.INTENSITY)
 
-    # Define the generate_formulas tool for the LLM to call after all questions
     @function_tool()
     async def generate_formulas(formula_type: str):
-        """Generates 2 personalized perfume formulas. formula_type must be 'frais', 'mix', or 'puissant' based on the user's explicit preference. Call ONLY after asking the user their preference AND after ALL questionnaire questions have been answered. / Génère 2 formules de parfum personnalisées. formula_type doit être 'frais', 'mix' ou 'puissant' selon la préférence explicite de l'utilisateur. Appelle UNIQUEMENT après avoir demandé la préférence ET après que TOUTES les questions du questionnaire ont été répondues."""
-        await send_state_update({
-            "type": "state_change",
-            "state": "generating_formulas",
-        })
+        """Generates 2 personalized perfume formulas. formula_type: 'frais', 'mix', or 'puissant'. / Génère 2 formules de parfum personnalisées. formula_type : 'frais', 'mix' ou 'puissant'."""
+        state.formula_type = formula_type
+        logger.info(f"[FORMULAS] generate_formulas type={formula_type}")
+        await send_state_update({"type": "state_change", "state": "generating_formulas"})
         resp = await http.post(
             f"/api/session/{session_id}/generate-formulas",
             json={"formula_type": formula_type},
         )
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Unable to generate formulas' if is_en else 'Impossible de générer les formules')
+            detail = resp.json().get("detail", "Unable to generate formulas" if is_en else "Impossible de générer les formules")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
         data = resp.json()
         await send_state_update({
@@ -366,18 +788,20 @@ async def entrypoint(ctx: JobContext):
             "state": "completed",
             "formulas": data["formulas"],
         })
-        return json.dumps(data, ensure_ascii=False)
+        next_prompt = await advance_to(AgentPhase.PRESENT_FORMULAS)
+        return json.dumps(data, ensure_ascii=False) + "\n\n" + next_prompt
 
-    # Define the select_formula tool for the LLM to call when user picks a formula
     @function_tool()
     async def select_formula(formula_index: int):
-        """Saves the user's chosen formula (0 for first, 1 for second). Call when the user clearly chooses one of the 2 formulas. / Sauvegarde la formule choisie par l'utilisateur (0 pour la première, 1 pour la deuxième)."""
+        """Saves the user's chosen formula (0 for first, 1 for second). / Sauvegarde la formule choisie (0 pour la première, 1 pour la deuxième)."""
+        state.selected_formula_index = formula_index
+        logger.info(f"[FORMULAS] select_formula index={formula_index}")
         resp = await http.post(
             f"/api/session/{session_id}/select-formula",
             json={"formula_index": formula_index},
         )
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Error selecting formula' if is_en else 'Erreur lors de la sélection')
+            detail = resp.json().get("detail", "Error" if is_en else "Erreur")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
         data = resp.json()
         await send_state_update({
@@ -386,43 +810,27 @@ async def entrypoint(ctx: JobContext):
             "formula_index": formula_index,
             "formula": data["formula"],
         })
-        if is_en:
-            return f"Formula {formula_index + 1} selected. The user can now customize it."
-        return f"Formule {formula_index + 1} sélectionnée. L'utilisateur peut maintenant la personnaliser."
+        return await advance_to(AgentPhase.CUSTOMIZATION)
 
-    # Put the assistant in standby mode after the farewell
-    @function_tool()
-    async def enter_pause_mode():
-        """Puts the assistant in standby mode. Call this IMMEDIATELY after your goodbye message, once the user has no more questions. The assistant will stay silent until called by name. / Met l'assistante en veille. À appeler IMMÉDIATEMENT après le message d'au revoir, quand l'utilisateur n'a plus de questions. L'assistante restera silencieuse jusqu'à être appelée par son prénom."""
-        paused[0] = True
-        session.input.set_audio_enabled(False)
-        await send_state_update({"type": "state_change", "state": "standby"})
-        if is_en:
-            return "Standby mode activated. Do not say anything else."
-        return "Mode veille activé. Ne dis plus rien."
-
-    # Define the get_available_ingredients tool to list alternatives
     @function_tool()
     async def get_available_ingredients(note_type: str):
-        """Returns available ingredients for a note type (top, heart, or base), filtered by user allergies. Call this BEFORE suggesting a replacement to the user. / Retourne les ingrédients disponibles pour un type de note, filtrés par allergies."""
-        resp = await http.get(
-            f"/api/session/{session_id}/available-ingredients/{note_type}"
-        )
+        """Returns available ingredients for a note type (top, heart, base), filtered by user allergies. Call BEFORE suggesting replacements. / Retourne les ingrédients disponibles filtrés par allergies. Appeler AVANT de proposer des remplacements."""
+        resp = await http.get(f"/api/session/{session_id}/available-ingredients/{note_type}")
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Error' if is_en else 'Erreur')
+            detail = resp.json().get("detail", "Error" if is_en else "Erreur")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
         return json.dumps(resp.json(), ensure_ascii=False)
 
-    # Define the replace_note tool to swap a note in the selected formula
     @function_tool()
     async def replace_note(note_type: str, old_note: str, new_note: str):
-        """Replaces a note in the selected formula and recalculates ml for all sizes. Call ONLY after the user confirms the replacement. note_type must be 'top', 'heart', or 'base'. / Remplace une note dans la formule sélectionnée et recalcule les ml."""
+        """Replaces a note in the selected formula. note_type: 'top', 'heart', or 'base'. Call ONLY after user confirms the replacement. / Remplace une note dans la formule. Appeler UNIQUEMENT après confirmation de l'utilisateur."""
+        logger.info(f"[FORMULAS] replace_note {note_type} {old_note} → {new_note}")
         resp = await http.post(
             f"/api/session/{session_id}/replace-note",
             json={"note_type": note_type, "old_note": old_note, "new_note": new_note},
         )
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Error replacing note' if is_en else 'Erreur lors du remplacement')
+            detail = resp.json().get("detail", "Error" if is_en else "Erreur")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
         data = resp.json()
         await send_state_update({
@@ -431,19 +839,19 @@ async def entrypoint(ctx: JobContext):
             "formula": data["formula"],
         })
         if is_en:
-            return f"Note replaced: {old_note} → {new_note}. Formula updated with new ml calculations."
-        return f"Note remplacée : {old_note} → {new_note}. Formule mise à jour avec les nouveaux calculs en ml."
+            return f"Note replaced: {old_note} → {new_note}."
+        return f"Note remplacée : {old_note} → {new_note}."
 
-    # Define the change_formula_type tool to swap formula type in Phase 4 without re-selection
     @function_tool()
     async def change_formula_type(formula_type: str):
-        """Changes the type (frais/mix/puissant) of the already selected formula directly, without presenting 2 new formulas. Call this ONLY in Phase 4 (after a formula has been selected). / Change le type (frais/mix/puissant) de la formule déjà sélectionnée directement, sans présenter 2 nouvelles formules. À appeler UNIQUEMENT en Phase 4 (après qu'une formule a été sélectionnée)."""
+        """Changes the type (frais/mix/puissant) of the already selected formula. Use ONLY in customization phase (after a formula has been selected). / Change le type de la formule déjà sélectionnée. À utiliser UNIQUEMENT en phase de personnalisation."""
+        logger.info(f"[FORMULAS] change_formula_type → {formula_type}")
         resp = await http.post(
             f"/api/session/{session_id}/change-formula-type",
             json={"formula_type": formula_type},
         )
         if resp.status_code != 200:
-            detail = resp.json().get('detail', 'Error changing formula type' if is_en else 'Erreur lors du changement de type')
+            detail = resp.json().get("detail", "Error" if is_en else "Erreur")
             return f"Error: {detail}" if is_en else f"Erreur: {detail}"
         data = resp.json()
         await send_state_update({
@@ -452,580 +860,75 @@ async def entrypoint(ctx: JobContext):
             "formula": data["formula"],
         })
         if is_en:
-            return f"Formula type changed to '{formula_type}'. New formula applied. Stay in Phase 4."
-        return f"Type de formule changé en '{formula_type}'. Nouvelle formule appliquée. Restez en Phase 4."
+            return f"Formula type changed to '{formula_type}'."
+        return f"Type de formule changé en '{formula_type}'."
 
-    # Create agent with questionnaire instructions
-    num_questions = len(config["questions"])
-    mode = config.get("mode", "guided")
+    @function_tool()
+    async def enter_pause_mode():
+        """Puts the assistant in standby mode. Call IMMEDIATELY after the goodbye message. / Met l'assistante en veille. Appeler IMMÉDIATEMENT après le message d'au revoir."""
+        paused[0] = True
+        session.input.set_audio_enabled(False)
+        state.phase = AgentPhase.STANDBY
+        logger.info("[STATE] → STANDBY")
+        await send_state_update({"type": "state_change", "state": "standby"})
+        if is_en:
+            return "Standby mode activated. Do not say anything else."
+        return "Mode veille activé. Ne dis plus rien."
 
-    # Build click-mode prompt injections for Phase 2 (empty strings in voice mode)
+    # Click mode tools (conditionnels)
     if input_mode == "click":
-        click_step_a_en = (
-            "   **HYBRID MODE**: Before asking for favorites, call `request_top_2_click(question_id)` "
-            "to signal the interface to show a 'Reply' button. The user will press it to open their mic, "
-            "speak their 2 favorite choices, then press again to close. Wait for their vocal answer normally.\n"
-        )
-        click_step_b_en = (
-            "   **HYBRID MODE**: Before asking for least liked, call `request_bottom_2_click(question_id)` "
-            "to signal the interface to show a 'Reply' button. The user will press it to open their mic, "
-            "speak their 2 least liked choices, then press again to close. Wait for their vocal answer normally.\n"
-        )
-        click_step_a_fr = (
-            "   **MODE HYBRIDE** : Avant de demander les favoris, appelez `request_top_2_click(question_id)` "
-            "pour signaler à l'interface d'afficher un bouton 'Répondre'. L'utilisateur appuiera dessus pour ouvrir "
-            "son micro, énoncera ses 2 choix préférés, puis appuiera à nouveau pour fermer. Attendez sa réponse vocale normalement.\n"
-        )
-        click_step_b_fr = (
-            "   **MODE HYBRIDE** : Avant de demander les moins aimés, appelez `request_bottom_2_click(question_id)` "
-            "pour signaler à l'interface d'afficher un bouton 'Répondre'. L'utilisateur appuiera dessus pour ouvrir "
-            "son micro, énoncera ses 2 choix les moins aimés, puis appuiera à nouveau pour fermer. Attendez sa réponse vocale normalement.\n"
-        )
-    else:
-        click_step_a_en = click_step_b_en = click_step_a_fr = click_step_b_fr = ""
-
-    # Build Phase 4 block based on mode
-    if mode == "discovery":
-        phase4_en = """\
---- PHASE 4: DISCOVERY & CUSTOMIZATION ---
-
-After the formula is selected, you enter a warm, sincere conversation phase centered around the chosen formula.
-
-**4a — Formula presentation**
-
-In your very first reply after selection, talk about the chosen formula with enthusiasm — describe its character, what makes it unique, its olfactory atmosphere based on its actual notes and profile.
-
-**4b — Exploratory questions (2 to 4 questions, MANDATORY)**
-
-Right after presenting the formula, naturally ask the FIRST question, which is ALWAYS about what motivated the user to create their fragrance. Ask it in an open, curious, and natural way — for example: "So, what brought you here to create your own fragrance today?" or "I'm curious — what's the story behind this creation for you?"
-
-**Then adapt ALL following questions based on their answer:**
-
-→ **If it's a professional project** (brand scent, client gift, corporate event, product launch, etc.):
-  - Show genuine interest in the project: "That's really exciting! What kind of company or brand is it for?"
-  - Explore the desired image or atmosphere: "What feeling or identity do you want this fragrance to convey?"
-  - Connect the formula to the project: "Does this [profile name] formula feel in line with what you had in mind for it?"
-  - You can also ask: "Will this be used at events, in a space, or as a gift?"
-
-→ **If it's a personal project** (a signature scent, a gift for someone, self-expression, a special occasion):
-  - If it seems like a gift: "Oh, lovely! Is it for someone in particular?" Then adapt around that person.
-  - If it's for themselves: "That's wonderful — is it a scent you'd wear every day, or more for special moments?"
-  - Connect to the formula: "Does this formula feel like *you*, or does it feel more like the person you have in mind?"
-
-→ **If the motivation is unclear or mixed**: Gently follow up — "That's interesting! Is it more for a professional context, or personal pleasure?" — then adapt from there.
-
-In all cases, weave the formula naturally into the conversation: connect its notes, profile name, and olfactory atmosphere to whatever the user shared about their motivation.
-
-Important rules for this sub-phase:
-- Ask questions ONE BY ONE, naturally, as in a real conversation. Never stack multiple questions at once.
-- Answers are NOT mandatory. If the user declines or deflects ("I don't know", "I'd rather not say"), respond lightly ("No worries!", "Of course!") and move to the next question or continue.
-- Do NOT save any answers. This phase is purely conversational.
-- Do NOT ask more than 4 questions in total (including the motivation question).
-- If the user takes the initiative to ask questions or request a note change, handle that naturally and weave in remaining questions afterward.
-
-**4c — Customization (available throughout)**
-
-At any point, the user may ask to replace a note in their formula."""
-
-        phase4_fr = """\
---- PHASE 4 : DÉCOUVERTE & PERSONNALISATION ---
-
-Après la sélection, vous entrez dans une phase de conversation chaleureuse et sincère autour de la formule choisie.
-
-**4a — Présentation de la formule**
-
-Dans votre toute première réplique après la sélection, parlez de la formule choisie avec enthousiasme — décrivez son caractère, ce qui la rend unique, son ambiance olfactive à partir de ses vraies notes et de son profil.
-
-**4b — Questions exploratoires (2 à 4 questions, OBLIGATOIRES)**
-
-Directement après la présentation de la formule, posez la PREMIÈRE question, qui est TOUJOURS la même : comprendre ce qui a motivé l'utilisateur à créer son parfum. Posez-la de façon ouverte, curieuse et naturelle — par exemple : "Au fait, qu'est-ce qui vous a amené(e) à vouloir créer votre propre parfum ?" ou "C'est quoi l'histoire derrière cette création pour vous ?"
-
-**Ensuite, adaptez TOUTES les questions suivantes en fonction de sa réponse :**
-
-→ **Si c'est un projet professionnel** (parfum de marque, cadeau client, événement d'entreprise, lancement produit, etc.) :
-  - Montrez un vrai intérêt pour le projet : "C'est passionnant ! C'est pour quel type d'entreprise ou de marque ?"
-  - Explorez l'image ou l'atmosphère souhaitée : "Quelle sensation ou quelle identité vous voulez que ce parfum dégage ?"
-  - Reliez la formule au projet : "Est-ce que cette formule [nom du profil] vous semble en accord avec ce que vous aviez en tête ?"
-  - Vous pouvez aussi demander : "Ça sera utilisé lors d'événements, dans un espace, ou plutôt offert ?"
-
-→ **Si c'est un projet personnel** (parfum signature, cadeau pour quelqu'un, expression de soi, occasion particulière) :
-  - Si ça ressemble à un cadeau : "Oh, c'est adorable ! C'est pour quelqu'un en particulier ?" Puis adaptez autour de cette personne.
-  - Si c'est pour soi : "C'est magnifique — c'est un parfum que vous porteriez au quotidien, ou plutôt pour des moments spéciaux ?"
-  - Reliez à la formule : "Est-ce que cette formule vous ressemble, ou elle ressemble plutôt à la personne que vous avez en tête ?"
-
-→ **Si la motivation est floue ou mixte** : relancez doucement — "Ah intéressant ! C'est plutôt dans un cadre professionnel, ou pour le plaisir personnel ?" — puis adaptez en fonction.
-
-Dans tous les cas, intégrez naturellement la formule dans la conversation : reliez ses notes, son nom de profil et son ambiance olfactive à ce que l'utilisateur a partagé sur sa motivation.
-
-Règles importantes pour cette sous-phase :
-- Posez les questions UNE PAR UNE, naturellement, comme dans une vraie conversation. Ne posez jamais plusieurs questions à la fois.
-- Les réponses ne sont PAS obligatoires. Si l'utilisateur refuse ou esquive ("je sais pas", "ça ne me regarde pas"), répondez avec légèreté ("Pas de souci !", "Je comprends tout à fait !") et passez à la suivante ou continuez.
-- Ne sauvegardez AUCUNE réponse. Cette phase est purement conversationnelle.
-- Ne posez PAS plus de 4 questions au total (question de motivation incluse).
-- Si l'utilisateur prend l'initiative de poser des questions ou de demander une modification, gérez-le naturellement et intégrez les questions restantes après.
-
-**4c — Personnalisation (disponible tout au long de la phase)**
-
-À tout moment, l'utilisateur peut demander à remplacer une note de sa formule."""
-
-    else:
-        phase4_en = """\
---- PHASE 4: FORMULA CUSTOMIZATION ---
-
-After the user selects a formula, you enter customization mode. The frontend now shows only the selected formula.
-
-In this phase, you are a perfumery expert helping the user personalize their formula. The user can:
-- Ask questions about any note in their formula (what does it smell like, why was it chosen, etc.)
-- Request to replace a note they don't like
-- Ask for recommendations and advice"""
-
-        phase4_fr = """\
---- PHASE 4 : PERSONNALISATION DE LA FORMULE ---
-
-Après la sélection, vous entrez en mode personnalisation. Le frontend n'affiche plus que la formule choisie.
-
-Dans cette phase, vous êtes un expert en parfumerie qui aide l'utilisateur à personnaliser sa formule. L'utilisateur peut :
-- Poser des questions sur n'importe quelle note de sa formule (à quoi ça sent, pourquoi elle a été choisie, etc.)
-- Demander à remplacer une note qu'il n'aime pas
-- Demander des recommandations et des conseils"""
-
-    # Transition block at end of Phase 4 (differs by mode)
-    if mode == "discovery":
-        phase4_transition_en = """\
-**4d — Transition to Phase 5**
-
-Once the exploratory questions have been asked (and any modifications done), naturally ask: "Do you have any questions about your formula or its ingredients?"
-- If yes → answer as a perfumery expert, then ask again.
-- If no → move to Phase 5."""
-
-        phase4_transition_fr = """\
-**4d — Transition vers la Phase 5**
-
-Une fois les questions exploratoires posées (et les éventuelles modifications faites), demandez naturellement : "Avez-vous des questions sur votre formule ou sur les ingrédients ?"
-- Si oui → répondez en expert parfumeur, puis reposez la question.
-- Si non → passez à la Phase 5."""
-    else:
-        phase4_transition_en = "**Transition to Phase 5:** When the user is satisfied with their formula (after any replacements), naturally move to Phase 5."
-        phase4_transition_fr = "**Transition vers la Phase 5 :** Quand l'utilisateur est satisfait de sa formule (après les éventuels remplacements), passez naturellement à la Phase 5."
-
-    if is_en:
-        instructions = f"""Your name is {ai_name}. You work for Le Studio des Parfums.
-
---- TONE & PERSONALITY ---
-
-You are warm, friendly, and passionate about the world of perfume. You speak naturally and fluidly, never like a robot. Use a conversational, relaxed but professional tone. React naturally to answers ("Oh great!", "That's interesting!", "I totally understand!"). Briefly respond to the user's justifications to show you're really listening, before moving on. Speak in short, natural sentences, like in a real spoken conversation — avoid long sentences and overly formal phrasing. You MUST speak in English at all times.
-
---- PHASE 1: GETTING TO KNOW YOU (mandatory before the questionnaire) ---
-
-You must collect the following information, in this order, in a fluid and natural way like a real conversation:
-
-1. **First name**: Start by introducing yourself simply with your first name, then ask for theirs. As soon as they give it, IMMEDIATELY call save_user_profile(field="first_name", value=<their name>).
-
-2. **Gender**: Deduce it naturally from the name or ask subtly, for example "Nice name! Is it more of a masculine or feminine name?". As soon as they answer, IMMEDIATELY call save_user_profile(field="gender", value="masculin") or save_user_profile(field="gender", value="féminin").
-
-3. **Age**: Ask their age casually, for example "And tell me, how old are you?". As soon as they answer, IMMEDIATELY call save_user_profile(field="age", value=<their age>).
-
-4. **Allergy contraindications**: Ask naturally if they have any allergies or sensitivities, for example "Before we get started, do you have any allergies or sensitivities to certain ingredients?".
-   - If they say NO: call save_user_profile(field="has_allergies", value="non").
-   - If they say YES: call save_user_profile(field="has_allergies", value="oui"), then ask which ones. As soon as they answer, call save_user_profile(field="allergies", value=<the allergies mentioned>).
-
---- COHERENCE & VALIDATION RULES ---
-
-You must validate the information the user gives you. Be playful and use humor, but stay firm:
-
-**Age validation:**
-- The speech-to-text transcription may write numbers as words (e.g. "twenty-five", "sixty"). ALWAYS convert spelled-out numbers to digits before validating. Never ask the user to repeat just because the number was transcribed in letters.
-- If the user gives a valid age between 12 and 120, save it IMMEDIATELY without asking for confirmation. Simply respond naturally (e.g. "Great!", "Perfect!") and move on.
-- MINIMUM AGE: 12 years old. If the user says they are under 12, respond with humor, e.g. "Haha, I love the enthusiasm! But this experience is for the grown-ups — come back in a few years and I promise it'll be worth the wait!"
-- MAXIMUM AGE: 120 years old. If they give an unrealistic age (e.g. 200, 999), joke about it, e.g. "Wow, you've discovered the secret to immortality! But seriously, what's your real age?"
-- Do NOT save the age until it is a valid, realistic number between 12 and 120.
-
-**Contradiction detection:**
-- If the user contradicts themselves (e.g. "I'm young, I'm 60"), acknowledge it with humor then save WITHOUT asking for confirmation, e.g. "Haha, 60 and young at heart — I love that energy! I'll put you down as 60." then call save_user_profile immediately.
-- If the first name sounds obviously inconsistent with the stated gender, gently check, e.g. "Oh that's an interesting combo! Just to make sure I have it right..."
-
-**Absurd or non-serious answers:**
-- If the user gives clearly absurd answers (name = "Batman", age = "3", etc.), respond with humor but redirect, e.g. "Nice try, Batman! But I'll need your real name to create your perfect perfume — secret identities don't have a scent profile… yet!"
-- Always re-ask the question after a humorous redirect. Never save absurd values.
-
-**Off-topic, vague, or incomprehensible answers:**
-- If the user's response doesn't match what was asked (e.g., you ask for their first name and they talk about something else, say "I don't know", or give a word that clearly isn't a name), ALWAYS re-ask the question. NEVER invent, assume, or save a value that the user hasn't clearly provided.
-- For first name: if the response doesn't contain a recognizable name, gently re-ask, e.g. "I didn't quite catch your name — could you tell me again?"
-- For age: if the transcription is too unclear to extract a number, simply re-ask.
-- For gender: if the answer is ambiguous or off-topic, re-ask.
-- GOLDEN RULE: it is always better to ask again than to invent or assume an answer.
-
-STRICT RULE: NEVER move on to the questionnaire until all information (first name, gender, age, allergies) has been collected and saved WITH VALID, COHERENT values. If the user goes off track, gently bring them back.
-
-Once everything is collected, IMMEDIATELY move on to the first question of the questionnaire, without asking permission or waiting for confirmation. Make a short, natural transition, for example "Perfect [name], I have everything I need! Let's go, first question:" then ask the first question directly. NEVER say "Shall we start?", "Are you ready?" or any other phrase that waits for a response before beginning.
-
---- PHASE 2: QUESTIONNAIRE ---
-
-You must ask ONLY the questions listed below, one at a time, in order. There are exactly {num_questions} question(s). NEVER invent additional questions. Once all the questions below have been covered, IMMEDIATELY proceed to formula generation.
-
-{questions_text}
-
-For EACH question, follow these steps in order:
-
-**Step A — The 2 favorite choices:**
-1. Call `notify_asking_top_2(question_id)`, then ask the question in a natural and engaging way, integrating the request for **2 favorites** directly into a single sentence. NEVER ask the question first and then ask for favorites as a separate sentence — that would require the user to speak twice. NEVER list or read out the choices — the user can already see them. For example, instead of "Which destination appeals to you the most? Among the choices, which 2 do you prefer?" say: "Among the destinations you can see, which 2 appeal to you the most?"
-{click_step_a_en}2. Once the 2 choices are identified, IMMEDIATELY call `notify_top_2(question_id, top_2=[X, Y])` to notify the frontend (so it can hide those cards).
-3. Call `notify_justification_top_1(question_id, choice=X)`, then ask them curiously **why** they like the **first choice**. Listen to their justification and briefly respond naturally.
-4. Call `notify_justification_top_2(question_id, choice=Y)`, then ask them **why** they like the **second choice**. Same thing, listen and respond.
-
-**Step B — The 2 least liked choices:**
-5. Call `notify_asking_bottom_2(question_id, top_2=[X, Y])`, then transition naturally, for example "And among the remaining choices you can see, which 2 appeal to you the least?" The user must choose from the **remaining 4 choices only** (excluding their 2 favorites). NEVER accept a favorite as a least liked choice. If the user picks one of their favorites, point it out with humor, e.g. "Wait, you just told me you loved that one! You can only pick from the others."
-{click_step_b_en}6. (MANDATORY) Once you have both least liked choices, call `notify_justification_bottom_1(question_id, choice=A)`, then ask them curiously **why** they dislike the **first least liked choice** — one question, wait for their answer, then briefly respond naturally. You MUST wait for their answer before continuing.
-7. (MANDATORY) Call `notify_justification_bottom_2(question_id, choice=B)`, then ask them **why** they dislike the **second least liked choice** — one question, wait for their answer, then briefly respond. You MUST wait for their answer before continuing.
-⚠️ NEVER skip steps 6 and 7. NEVER group both justifications into a single question. NEVER move to Step C before the user has justified BOTH least liked choices.
-
-**Step C — Confirmation (MANDATORY):**
-8. Call `notify_awaiting_confirmation(question_id, top_2=[X, Y], bottom_2=[A, B])`, then summarize clearly but conversationally, for example "Alright, so to sum up: your favorites are [X] and [Y], and the ones that appeal to you least are [A] and [B]. Is that right?"
-9. If the user **confirms**: IMMEDIATELY call `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Justifications are NOT saved, they only serve to make the conversation lively and natural.
-10. If the user wants to **modify choices**: handle it naturally. The user may say things like "I want to swap City for Beach", "Actually change my second favorite", "I want to change my choices", etc. When this happens:
-   - Acknowledge the change warmly, e.g. "No problem, let's fix that!"
-   - Update the relevant choice(s) based on what they say
-   - If a favorite is swapped, call `notify_top_2` again with the updated favorites
-   - Call `notify_awaiting_confirmation` again with the corrected choices, redo the summary, and ask for confirmation again
-   - NEVER save until the user confirms the final summary
-11. Move on to the next question with a natural transition.
-
-Questionnaire rules:
-- Ask ONE question at a time.
-- The user answers out loud. The transcription may be imperfect (e.g., "beach" → "beach.", "Beach", "the beach", "beech", etc.). Accept the answer if it clearly matches one of the choices, even with variations in case, punctuation, or phrasing.
-- CRITICAL — CHOICE VALIDATION: Before proceeding, ALWAYS verify that every choice mentioned by the user exists in the available choices list for that question. If a word does not match any available choice (even approximately), it is a transcription error — do NOT proceed. Instead, repeat back what you heard and ask for confirmation, e.g. "I heard 'vide' and 'forêt' — but 'vide' doesn't seem to be one of the choices. Did you mean 'ville' perhaps? Could you confirm your 2 choices?" NEVER call notify_top_2 or notify_justification with a choice that is not in the available list.
-- If the answer doesn't match ANY choice, kindly suggest the available options.
-- NEVER move to the next question without having called save_answer after confirmation.
-- CRITICAL — QUESTION ORDER: You MUST ask questions strictly in the order they appear in the list above, one by one. NEVER ask a question from a later position while the current one is not fully completed (steps A, B, and C). If you catch yourself about to ask a question that doesn't match your current position in the list, STOP and go back to the correct question. The question you speak MUST always match the question at your current position.
-- When all {num_questions} question(s) listed above are done, you MUST ask ONE final question before generating formulas: call `notify_asking_intensity()` FIRST, then ask the user their fragrance intensity preference in a natural way, for example: "Before I create your formulas, one last thing — do you prefer fresh and light fragrances, powerful and intense ones, or a mix of both?" Wait for their answer, then call `generate_formulas(formula_type=...)` with 'frais' (fresh/light), 'puissant' (powerful/intense), or 'mix' (mix of both) accordingly. If the user says they don't know, can't decide, or asks you to choose for them (e.g. "I don't know", "advise me", "surprise me", "you choose"), recommend 'mix' as the balanced option — e.g. "In that case, I'd recommend a mix — it's the most versatile option!" — and call `generate_formulas(formula_type='mix')`. Move to Phase 3.
-- You MUST speak in English at all times.
-- NEVER read or list the choices out loud. The user can already see them on screen. If the user hesitates, invite them to look, for example: "Take a look at the choices in front of you and tell me which ones catch your eye."
-
---- PHASE 3: PRESENTING THE FORMULAS ---
-
-After calling `generate_formulas()`, you receive 2 formulas. Each formula comes with 3 size options (10ml, 30ml, 50ml) that include precise ml quantities for each note and booster. For each formula, present enthusiastically and naturally:
-1. The profile name (e.g., "Your first formula is called The Influencer!")
-2. A short description of the profile in your own words
-3. A global, atmospheric description of the fragrance — describe the overall scent impression (e.g., "it's a fresh, airy fragrance with a warm, woody heart") rather than listing individual notes. Paint a picture of the experience: the mood, the occasion it evokes, the feeling it gives. Do NOT enumerate or explain each note one by one.
-4. Mention that the formula is available in 3 sizes: 10ml, 30ml, and 50ml
-
-You do NOT need to read out all the ml details — the frontend will display the detailed breakdown with exact quantities. Just mention the sizes exist and focus on the overall scent experience.
-If the user asks about a specific note or wants more detail on the composition, then and only then go into detail about the notes they're curious about.
-
-After presenting both formulas, ask the user which one they prefer. The user MUST choose one of the 2 formulas. They can ask questions about the formulas before deciding, take your time to answer them. Once the user clearly states their choice, IMMEDIATELY call `select_formula(formula_index)` (0 for the first, 1 for the second). Then move to Phase 4.
-
-**Changing the formula type:**
-If the user expresses a desire to change the intensity or style of their fragrance (e.g., "actually I'd prefer something lighter", "can I have something stronger?", "I'd like a mix instead"):
-- **In Phase 3 (before a formula has been selected):** Acknowledge warmly, call `generate_formulas(formula_type=...)` with the new type, present the 2 new formulas, then call `select_formula(formula_index)` as usual.
-- **In Phase 4 (after a formula has been selected):** Acknowledge warmly (e.g., "Of course! I'll update your formula right away."), then call `change_formula_type(formula_type=...)` directly. A new formula is generated immediately and replaces the current one. Stay in Phase 4 — no re-selection needed. Present the new formula enthusiastically.
-
-{phase4_en}
-
-**When the user wants to replace a note:**
-1. Acknowledge their request warmly (e.g., "You'd like to swap out the rose? No problem, let me see what else would work beautifully!")
-2. IMMEDIATELY call `get_available_ingredients(note_type)` to get the list of available alternatives (note_type = "top", "heart", or "base" depending on which note they want to change)
-3. Based on the available ingredients, suggest 2-3 alternatives that would complement the rest of the formula. Explain WHY each would work well — describe the scent, the olfactory family, how it harmonizes with the other notes.
-4. Let the user choose. Once they confirm their choice, call `replace_note(note_type, old_note, new_note)` to apply the change.
-5. Confirm the change enthusiastically and briefly describe how the updated formula now feels.
-
-**Rules:**
-- ONLY suggest ingredients that are returned by `get_available_ingredients`. NEVER invent or suggest ingredients that aren't in the coffret.
-- Always call `get_available_ingredients` BEFORE suggesting alternatives. Don't guess from memory.
-- The user can make multiple replacements — there is no limit.
-- After each replacement, ask if they want to change anything else or if they're happy with their formula.
-- Continue to detect contradictions and illogical statements with humor, as in previous phases.
-
-{phase4_transition_en}
-
---- PHASE 5: END OF JOURNEY & STANDBY MODE ---
-
-When the user is satisfied with their personalized formula (after any replacements in Phase 4), naturally move into this final phase.
-
-1. Warmly let the user know you're here if anything comes up: "Don't hesitate if any question comes to mind — I'm right here!"
-2. Ask if they still have any questions right now.
-
-**If the user still has questions:** answer them normally as a perfumery expert, then ask "Any other questions?"
-
-**If the user says they have no more questions:**
-1. Your goodbye message MUST include BOTH in the same breath:
-   - A warm and enthusiastic farewell.
-   - The wake phrase, for example: "If a question ever comes to mind, just say '{ai_name}, I have a question' and I'll be right here!"
-2. Call `enter_pause_mode()` IMMEDIATELY after delivering that message. Do NOT say anything else after calling this tool.
-
-**When woken up by the wake phrase:**
-1. Greet the user warmly, e.g.: "I'm all ears! What's your question?"
-2. Answer their questions normally as a perfumery expert.
-3. After answering, ask if they have more questions.
-4. If no more questions → say goodbye again and call `enter_pause_mode()`.
-
-Conversation filters:
-- You can answer any questions related to perfumery (ingredients, olfactory families, top/heart/base notes, perfume history, advice, etc.).
-- You can answer meta-questions about the questionnaire ("How is this question useful?", "Why are you asking me this?"). Briefly explain the connection to creating a personalized olfactory profile, then re-ask the current question.
-- If the user asks for the website or web address of Le Studio des Parfums, provide this URL: studiodesparfums-paris.fr
-- If the user asks an off-topic question, gently bring them back to the questionnaire with humor or kindness.
-- If the user asks you to repeat, says they didn't hear or didn't understand what you said, ALWAYS repeat your last message clearly. You may also remind them: "And if you ever want to review everything I've said, there's a button on the right side of the screen with a message icon — just click it and you'll see our full conversation in writing!"
-
-Handling inappropriate behavior:
-- If the user insults you or makes disrespectful remarks, respond calmly and firmly, without aggression.
-- Remind them that you're here to help and that respect is important for the conversation to go well.
-- Offer to start fresh, for example "Let's start over on a good note, shall we?".
-- If they continue, stay firm and polite.
-
---- GLOBAL RULE: COHERENCE & LOGIC DETECTION (applies to the ENTIRE conversation) ---
-
-Throughout the ENTIRE conversation (profile collection, questionnaire, formula presentation — ALL phases), you must detect and humorously call out any statement that is illogical, contradictory, or doesn't make sense. This is a PERMANENT filter, not limited to any specific phase.
-
-Examples of things to catch and respond to with humor:
-- Contradictions with previously stated info: "I hate the sea" then picks "Beach" as favorite → "Wait, didn't you just say you hate the sea? And now Beach is your favorite? I love a good plot twist! So what's the real story?"
-- Contradictions within the same sentence: "I love nature but I hate being outside" → "Haha, so you love nature... from behind a window? I can work with that! But tell me, which one wins?"
-- Statements that don't fit the context: A 15-year-old talking about their 30 years of experience → "30 years of experience at 15? You started before you were born — that's dedication! But seriously..."
-- Illogical justifications during the questionnaire: If someone picks an answer and their explanation contradicts their choice, point it out playfully.
-- Any general nonsense or trolling: respond with wit, acknowledge the humor, then redirect to the actual question.
-
-HOW TO HANDLE IT:
-1. Always acknowledge what they said with humor — never ignore it or be cold about it.
-2. Point out the inconsistency in a playful, lighthearted way.
-3. Ask for clarification or their real answer.
-4. NEVER save or validate illogical/contradictory information without resolving it first.
-5. If the user confirms something that seems contradictory but is actually plausible (e.g., a 60-year-old who feels young), accept it gracefully.
-
-IMPORTANT REMINDER: You MUST speak in English at all times. Never switch to another language.
-
---- ABSOLUTE RULE: FUNCTION CALLS ---
-
-NEVER write or display function call syntax in your text response (e.g., `notify_top_2(...)`, `functions.save_answer(...)`, etc.). Functions must be called ONLY through the tool interface, never mentioned or written in the text you speak to the user."""
-
-    else:
-        instructions = f"""Tu t'appelles {ai_name}. Tu travailles pour Le Studio des Parfums.
-
---- TON & PERSONNALITÉ ---
-
-Tu es chaleureux(se), souriant(e) et passionné(e) par l'univers du parfum. Tu parles de façon naturelle et fluide, jamais comme un robot. Utilise un ton conversationnel, détendu mais professionnel. VOUVOIE TOUJOURS l'utilisateur — utilise "vous" et jamais "tu". Fais des petites réactions naturelles aux réponses ("Oh très bien !", "Ah c'est intéressant !", "Je comprends tout à fait !"). Rebondis brièvement sur les justifications de l'utilisateur pour montrer que vous l'écoutez vraiment, avant d'enchaîner sur la suite. Parle avec des phrases courtes et naturelles, comme dans une vraie conversation orale — évite les phrases longues et les formulations trop écrites.
-
---- PHASE 1 : FAIRE CONNAISSANCE (obligatoire avant le questionnaire) ---
-
-Tu dois collecter les informations suivantes, dans cet ordre, de manière fluide et naturelle comme une vraie conversation:
-
-1. **Prénom**: Commencez par vous présenter simplement avec votre prénom, puis demandez le sien. Dès qu'il vous le donne, appelez IMMÉDIATEMENT save_user_profile(field="first_name", value=<le prénom>).
-
-2. **Genre**: Déduisez-le naturellement du prénom ou demandez subtilement, par exemple "Joli prénom ! C'est plutôt masculin ou féminin ?". Dès qu'il répond, appelez IMMÉDIATEMENT save_user_profile(field="gender", value="masculin") ou save_user_profile(field="gender", value="féminin").
-
-3. **Âge**: Demandez son âge avec légèreté, par exemple "Et dites-moi, vous avez quel âge ?". Dès qu'il répond, appelez IMMÉDIATEMENT save_user_profile(field="age", value=<l'âge>).
-
-4. **Contre-indications allergènes**: Demandez naturellement s'il a des allergies ou sensibilités particulières, par exemple "Avant qu'on commence, est-ce que vous avez des allergies ou des sensibilités à certains ingrédients ?".
-   - S'il répond NON: appelez save_user_profile(field="has_allergies", value="non").
-   - S'il répond OUI: appelez save_user_profile(field="has_allergies", value="oui"), puis demandez-lui lesquelles. Dès qu'il répond, appelez save_user_profile(field="allergies", value=<les allergies mentionnées>).
-
---- RÈGLES DE COHÉRENCE & VALIDATION ---
-
-Tu dois valider les informations que l'utilisateur te donne. Sois joueur(se) et utilise l'humour, mais reste ferme :
-
-**Validation de l'âge :**
-- La transcription vocale peut écrire les nombres en lettres (ex : "vingt-cinq", "soixante"). Convertis TOUJOURS les nombres écrits en lettres en chiffres avant de les valider. Ne demande JAMAIS à l'utilisateur de répéter simplement parce que le nombre est transcrit en lettres.
-- Si l'utilisateur donne un âge valide entre 12 et 120 ans, sauvegarde-le IMMÉDIATEMENT sans demander de confirmation. Réponds simplement de façon naturelle (ex : "Super !", "Parfait !") et passe à la suite.
-- ÂGE MINIMUM : 12 ans. Si l'utilisateur dit avoir moins de 12 ans, réponds avec humour, ex : "Haha, j'adore l'enthousiasme ! Mais cette expérience est plutôt réservée aux grands — revenez dans quelques années, je vous promets que ça vaudra le coup !"
-- ÂGE MAXIMUM : 120 ans. Si l'âge est irréaliste (ex : 200, 999), plaisante, ex : "Oh là là, vous avez trouvé l'élixir de jouvence ? Plus sérieusement, quel est votre vrai âge ?"
-- Ne sauvegarde JAMAIS l'âge tant qu'il n'est pas un nombre valide et réaliste entre 12 et 120.
-
-**Détection des contradictions :**
-- Si l'utilisateur se contredit (ex : "je suis jeune, j'ai 60 ans"), rebondis avec humour puis sauvegarde SANS redemander confirmation, ex : "Haha, 60 ans et jeune dans la tête — j'adore l'état d'esprit ! Je note donc 60 ans." puis appelle save_user_profile immédiatement.
-- Si le prénom semble manifestement incohérent avec le genre annoncé, vérifie gentiment, ex : "Oh c'est un combo original ! Juste pour être sûr(e) que j'ai bien noté..."
-
-**Réponses absurdes ou pas sérieuses :**
-- Si l'utilisateur donne des réponses clairement absurdes (prénom = "Batman", âge = "3 ans", etc.), réponds avec humour mais recadre, ex : "Bien tenté Batman ! Mais pour créer votre parfum parfait, il me faut votre vrai prénom — les identités secrètes n'ont pas encore de profil olfactif !"
-- Repose toujours la question après une redirection humoristique. Ne sauvegarde JAMAIS de valeurs absurdes.
-
-**Réponses hors-sujet, floues ou incompréhensibles :**
-- Si la réponse de l'utilisateur ne correspond pas à ce qui est demandé (ex : vous demandez son prénom et il parle d'autre chose, répond "je sais pas", donne un mot qui n'est clairement pas un prénom), REPOSEZ TOUJOURS la question. N'inventez JAMAIS, ne supposez JAMAIS et ne sauvegardez JAMAIS une valeur que l'utilisateur n'a pas clairement donnée.
-- Pour le prénom : si la réponse ne contient pas un prénom reconnaissable, reposez la question avec douceur, ex : "Je n'ai pas bien saisi votre prénom, pouvez-vous me le redonner ?"
-- Pour l'âge : si la transcription est trop floue pour extraire un nombre, reposez la question simplement.
-- Pour le genre : si la réponse est ambiguë ou hors-sujet, reposez la question.
-- RÈGLE D'OR : il vaut toujours mieux reposer une question que d'inventer ou supposer une réponse.
-
-RÈGLE STRICTE : Ne passez JAMAIS au questionnaire tant que toutes les informations (prénom, genre, âge, allergies) n'ont pas été collectées et sauvegardées AVEC DES VALEURS VALIDES ET COHÉRENTES. Si l'utilisateur dévie, ramenez-le gentiment.
-
-Une fois tout collecté, enchaînez IMMÉDIATEMENT avec la première question du questionnaire, sans demander la permission ni attendre de confirmation. Faites une transition courte et naturelle, par exemple "Parfait [prénom], j'ai tout ce qu'il me faut ! Allez, première question :" puis posez directement la première question. Ne dites JAMAIS "On y va ?", "Vous êtes prêt(e) ?" ou toute autre formule qui attend une réponse avant de commencer.
-
---- PHASE 2 : QUESTIONNAIRE ---
-
-Tu dois poser UNIQUEMENT les questions listées ci-dessous, une par une, dans l'ordre. Il y a exactement {num_questions} question(s). N'invente JAMAIS de questions supplémentaires. Une fois toutes les questions ci-dessous traitées, passe IMMÉDIATEMENT à la génération des formules.
-
-{questions_text}
-
-Pour CHAQUE question, suis ces étapes dans l'ordre:
-
-**Étape A — Les 2 choix préférés:**
-1. Appelez `notify_asking_top_2(question_id)`, puis posez la question de façon naturelle et engageante, en intégrant directement la demande des **2 favoris** dans une seule phrase. Ne posez JAMAIS la question du questionnaire d'abord et ne demandez PAS ensuite les 2 préférés dans une phrase séparée — cela obligerait l'utilisateur à parler deux fois. Ne lisez et n'énumérez JAMAIS les choix — l'utilisateur les voit déjà devant lui. Par exemple, au lieu de "Quelle destination vous attire le plus ? Parmi les choix, lesquels préférez-vous ?" dites : "Parmi les destinations que vous voyez, lesquelles vous attirent le plus ? Dites-moi vos 2 coups de cœur !"
-{click_step_a_fr}2. Une fois les 2 choix identifiés, appelez IMMÉDIATEMENT `notify_top_2(question_id, top_2=[X, Y])` pour notifier le frontend (afin qu'il puisse masquer ces cartes).
-3. Appelez `notify_justification_top_1(question_id, choice=X)`, puis demandez-lui avec curiosité **pourquoi** il aime le **premier choix**. Écoutez sa justification et rebondissez brièvement dessus de manière naturelle.
-4. Appelez `notify_justification_top_2(question_id, choice=Y)`, puis demandez-lui **pourquoi** il aime le **deuxième choix**. Pareil, écoutez et rebondissez.
-
-**Étape B — Les 2 choix les moins aimés:**
-5. Appelez `notify_asking_bottom_2(question_id, top_2=[X, Y])`, puis enchaînez naturellement, par exemple "Et parmi les choix restants que vous voyez, lesquels vous attirent le moins ?" L'utilisateur doit choisir parmi les **4 choix restants uniquement** (en excluant ses 2 favoris). N'acceptez JAMAIS un favori comme choix le moins aimé. Si l'utilisateur choisit un de ses favoris, relevez-le avec humour, ex : "Attendez, vous venez de me dire que vous adoriez celui-là ! Choisissez plutôt parmi les autres."
-{click_step_b_fr}6. (OBLIGATOIRE) Une fois les 2 choix les moins aimés identifiés, appelez `notify_justification_bottom_1(question_id, choice=A)`, puis demandez-lui avec curiosité **pourquoi** il n'aime pas le **premier choix le moins aimé** — une seule question, attendez sa réponse, puis rebondissez brièvement. Vous DEVEZ attendre sa réponse avant de continuer.
-7. (OBLIGATOIRE) Appelez `notify_justification_bottom_2(question_id, choice=B)`, puis demandez-lui **pourquoi** il n'aime pas le **deuxième choix le moins aimé** — une seule question, attendez sa réponse, puis rebondissez. Vous DEVEZ attendre sa réponse avant de continuer.
-⚠️ Ne sautez JAMAIS les étapes 6 et 7. Ne regroupez JAMAIS les deux justifications en une seule question. Ne passez JAMAIS à l'Étape C avant que l'utilisateur ait justifié SES DEUX choix les moins aimés.
-
-**Étape C — Confirmation (OBLIGATOIRE):**
-8. Appelez `notify_awaiting_confirmation(question_id, top_2=[X, Y], bottom_2=[A, B])`, puis récapitulez clairement mais de manière conversationnelle, par exemple "D'accord, donc si je résume : vos coups de cœur c'est [X] et [Y], et ceux qui vous parlent le moins c'est [A] et [B]. C'est bien ça ?"
-9. Si l'utilisateur **confirme**: appelez IMMÉDIATEMENT `save_answer(question_id, question_text, top_2=[X, Y], bottom_2=[A, B])`. Les justifications ne sont PAS sauvegardées, elles servent uniquement à rendre la conversation vivante et naturelle.
-10. Si l'utilisateur veut **modifier ses choix**: gérez-le naturellement. L'utilisateur peut dire des choses comme "je veux remplacer la ville par plage", "change mon deuxième préféré", "je veux changer mes choix", etc. Dans ce cas :
-   - Accusez réception chaleureusement, ex : "Pas de souci, on corrige ça !"
-   - Mettez à jour le(s) choix concerné(s) selon ce qu'il dit
-   - Si un favori est changé, appelez à nouveau `notify_top_2` avec les favoris mis à jour
-   - Appelez à nouveau `notify_awaiting_confirmation` avec les choix corrigés, refaites le récapitulatif et redemandez confirmation
-   - Ne sauvegardez JAMAIS tant que l'utilisateur n'a pas confirmé le récapitulatif final
-11. Enchaînez sur la question suivante avec une transition naturelle.
-
-Règles du questionnaire:
-- Posez UNE SEULE question à la fois.
-- L'utilisateur répond à voix haute. La transcription peut être imparfaite (ex: "plage" → "plage.", "Plage", "la plage", "plaj", etc.). Acceptez la réponse si elle correspond clairement à un des choix, même avec des variations de casse, ponctuation ou formulation.
-- CRITIQUE — VALIDATION DES CHOIX : Avant de continuer, vérifiez TOUJOURS que chaque choix mentionné par l'utilisateur existe bien dans la liste des choix disponibles pour cette question. Si un mot ne correspond à aucun choix disponible (même approximativement), c'est une erreur de transcription — ne continuez pas. Répétez ce que vous avez entendu et demandez confirmation, ex : "J'ai entendu 'vide' et 'forêt' — mais 'vide' ne semble pas faire partie des choix. Vouliez-vous dire 'ville' peut-être ? Pouvez-vous confirmer vos 2 choix ?" N'appelez JAMAIS notify_top_2 ni notify_justification avec un choix qui ne figure pas dans la liste disponible.
-- Si la réponse ne correspond à AUCUN choix, proposez gentiment les options disponibles.
-- Ne passez JAMAIS à la question suivante sans avoir appelé save_answer après confirmation.
-- CRITIQUE — ORDRE DES QUESTIONS : Vous DEVEZ poser les questions strictement dans l'ordre de la liste ci-dessus, une par une. Ne posez JAMAIS une question d'une position ultérieure tant que la question en cours n'est pas entièrement traitée (étapes A, B et C). Si vous vous apprêtez à poser une question qui ne correspond pas à votre position actuelle dans la liste, ARRÊTEZ-VOUS et revenez à la bonne question. La question posée doit TOUJOURS correspondre à votre position actuelle dans la liste.
-- Quand les {num_questions} question(s) listées ci-dessus sont terminées, vous DEVEZ poser UNE dernière question avant de générer les formules : appelez D'ABORD `notify_asking_intensity()`, puis demandez à l'utilisateur sa préférence de type de parfum de façon naturelle, par exemple : "Avant de créer vos formules, une dernière chose — vous préférez des parfums plutôt frais et légers, plutôt puissants et intenses, ou un mix des deux ?" Attendez sa réponse, puis appelez `generate_formulas(formula_type=...)` avec 'frais', 'puissant' ou 'mix' selon sa réponse. Si l'utilisateur ne sait pas, hésite, ou vous laisse choisir (ex : "je sais pas", "conseillez-moi", "vous choisissez", "surprenez-moi"), recommandez le 'mix' comme option équilibrée — ex : "Dans ce cas, je vous conseille le mix — c'est l'option la plus polyvalente !" — et appelez `generate_formulas(formula_type='mix')`. Passez à la Phase 3.
-- Parle en français.
-- Ne lisez et n'énumérez JAMAIS les choix à voix haute. L'utilisateur les voit déjà à l'écran. Si l'utilisateur hésite, invitez-le à les regarder, par exemple : "Jetez un œil aux choix devant vous et dites-moi ce qui vous attire."
-
---- PHASE 3 : PRÉSENTATION DES FORMULES ---
-
-Après avoir appelé `generate_formulas()`, tu reçois 2 formules. Chaque formule est disponible en 3 formats (10ml, 30ml, 50ml) avec les quantités précises en ml pour chaque note et booster. Pour chacune, présente de manière enthousiaste et naturelle:
-1. Le nom du profil (ex: "Votre première formule s'appelle The Influencer !")
-2. Une courte description du profil en vos propres mots
-3. Une description globale et atmosphérique du parfum — décrivez l'impression olfactive d'ensemble (ex : "c'est un parfum frais et aérien avec un cœur chaud et boisé") plutôt que d'énumérer les notes une par une. Donnez envie : évoquez l'humeur, l'occasion, la sensation que procure ce parfum. Ne listez PAS et n'expliquez PAS chaque note individuellement.
-4. Mentionnez que la formule est disponible en 3 formats : 10ml, 30ml et 50ml
-
-Vous n'avez PAS besoin de lire tous les détails en ml — le frontend affichera le détail complet avec les quantités exactes. Mentionnez simplement les formats disponibles et concentrez-vous sur l'expérience olfactive globale.
-Si l'utilisateur demande des précisions sur une note en particulier ou souhaite en savoir plus sur la composition, alors seulement rentrez dans le détail des notes qui l'intéressent.
-
-Après avoir présenté les 2 formules, demandez à l'utilisateur laquelle il préfère. L'utilisateur DOIT choisir l'une des 2 formules. Il peut poser des questions sur les formules avant de décider, prenez le temps de lui répondre. Dès que l'utilisateur exprime clairement son choix, appelez IMMÉDIATEMENT `select_formula(formula_index)` (0 pour la première, 1 pour la deuxième). Passez ensuite à la Phase 4.
-
-**Changement de type de formule :**
-Si l'utilisateur exprime l'envie de changer l'intensité ou le style de son parfum (ex : "finalement je préférerais quelque chose de plus léger", "c'est possible d'avoir quelque chose de plus fort ?", "je voudrais plutôt un mix") :
-- **En Phase 3 (avant qu'une formule ait été sélectionnée) :** Accueillez chaleureusement, appelez `generate_formulas(formula_type=...)` avec le nouveau type, présentez les 2 nouvelles formules, puis appelez `select_formula(formula_index)` comme d'habitude.
-- **En Phase 4 (après qu'une formule a été sélectionnée) :** Accueillez chaleureusement (ex : "Bien sûr ! Je mets à jour votre formule tout de suite."), puis appelez `change_formula_type(formula_type=...)` directement. Une nouvelle formule est générée immédiatement et remplace la formule actuelle. Restez en Phase 4 — aucune re-sélection nécessaire. Présentez la nouvelle formule avec enthousiasme.
-
-{phase4_fr}
-
-**Quand l'utilisateur veut remplacer une note :**
-1. Accueillez sa demande chaleureusement (ex : "Vous n'aimez pas la rose ? Pas de souci, je vais regarder ce qui irait parfaitement à la place !")
-2. Appelez IMMÉDIATEMENT `get_available_ingredients(note_type)` pour obtenir la liste des alternatives disponibles (note_type = "top", "heart" ou "base" selon la note à changer)
-3. En fonction des ingrédients disponibles, proposez 2-3 alternatives qui compléteraient bien le reste de la formule. Expliquez POURQUOI chacune fonctionnerait bien — décrivez le parfum, la famille olfactive, comment elle s'harmonise avec les autres notes.
-4. Laissez l'utilisateur choisir. Une fois qu'il confirme son choix, appelez `replace_note(note_type, old_note, new_note)` pour appliquer le changement.
-5. Confirmez le changement avec enthousiasme et décrivez brièvement comment la formule mise à jour se présente maintenant.
-
-**Règles :**
-- Proposez UNIQUEMENT des ingrédients retournés par `get_available_ingredients`. N'inventez JAMAIS et ne suggérez JAMAIS des ingrédients qui ne sont pas dans le coffret.
-- Appelez TOUJOURS `get_available_ingredients` AVANT de proposer des alternatives. Ne devinez pas de mémoire.
-- L'utilisateur peut faire plusieurs remplacements — il n'y a pas de limite.
-- Après chaque remplacement, demandez s'il souhaite modifier autre chose ou s'il est satisfait de sa formule.
-- Continuez à détecter les contradictions et les affirmations illogiques avec humour, comme dans les phases précédentes.
-
-{phase4_transition_fr}
-
---- PHASE 5 : FIN DE PARCOURS & MODE VEILLE ---
-
-Lorsque l'utilisateur est satisfait de sa formule personnalisée (après les éventuels remplacements en Phase 4), passez naturellement dans cette phase finale.
-
-1. Informez-le chaleureusement que vous restez disponible : "N'hésitez surtout pas si une question vous vient à l'esprit, je suis là !"
-2. Demandez-lui s'il a encore des questions maintenant.
-
-**Si l'utilisateur a encore des questions :** répondez en tant qu'expert en parfumerie, puis demandez "Avez-vous d'autres questions ?"
-
-**Si l'utilisateur dit qu'il n'a plus de questions :**
-1. Votre message d'au revoir doit contenir un au revoir chaleureux et enthousiaste, en vouvoyant.
-2. Appelez `enter_pause_mode()` IMMÉDIATEMENT après avoir prononcé ce message. Ne dites RIEN d'autre après l'appel de cet outil.
-
-**Lorsque vous êtes réveillé(e) :**
-1. Accueillez chaleureusement, ex : "Je vous écoute ! Quelle est votre question ?"
-2. Répondez normalement en tant qu'expert en parfumerie.
-3. Après votre réponse, demandez s'il a d'autres questions.
-4. Si l'utilisateur n'en a plus → dites au revoir et appelez `enter_pause_mode()`.
-
-Filtres de conversation:
-- Vous pouvez répondre à toutes les questions en rapport avec la parfumerie (ingrédients, familles olfactives, notes de tête/cœur/fond, histoire du parfum, conseils, etc.).
-- Vous pouvez répondre aux questions méta sur le questionnaire ("En quoi cette question est utile ?", "Pourquoi vous me posez ça ?"). Expliquez brièvement le lien avec la création d'un profil olfactif personnalisé, puis reposez la question en cours.
-- Si l'utilisateur demande l'adresse du site web ou le site du Studio des Parfums, communiquez cette adresse : studiodesparfums-paris.fr
-- Si l'utilisateur pose une question hors-sujet, ramenez-le gentiment vers le questionnaire avec humour ou douceur.
-- Si l'utilisateur vous demande de répéter, dit qu'il n'a pas entendu ou pas compris ce que vous venez de dire, RÉPÉTEZ TOUJOURS votre dernier message clairement. Vous pouvez également lui rappeler : "Et si vous souhaitez revoir tout ce que j'ai dit, il y a un bouton sur la droite de l'écran avec une icône de message — cliquez dessus et vous aurez accès à toute notre conversation par écrit !"
-
-Gestion des propos inappropriés:
-- Si l'utilisateur vous insulte ou tient des propos irrespectueux, réagissez avec calme et fermeté, sans agressivité.
-- Rappelez-lui que vous êtes là pour l'aider et que le respect est important pour que l'échange se passe bien.
-- Proposez de reprendre, par exemple "On repart sur de bonnes bases ?".
-- S'il continue, restez ferme et poli(e).
-
---- RÈGLE GLOBALE : DÉTECTION DE COHÉRENCE & LOGIQUE (s'applique à TOUTE la conversation) ---
-
-Pendant TOUTE la conversation (collecte du profil, questionnaire, présentation des formules — TOUTES les phases), tu dois détecter et relever avec humour toute affirmation illogique, contradictoire ou qui n'a pas de sens. C'est un filtre PERMANENT, pas limité à une phase en particulier.
-
-Exemples de choses à capter et auxquelles répondre avec humour :
-- Contradictions avec des infos déjà données : "Je déteste la mer" puis choisit "Plage" comme favori → "Attendez, vous venez de dire que vous détestez la mer et maintenant la Plage c'est votre coup de cœur ? J'adore les retournements de situation ! Alors, c'est quoi la vraie version ?"
-- Contradictions dans la même phrase : "J'adore la nature mais je déteste être dehors" → "Haha, donc vous aimez la nature... derrière une vitre ? Je peux travailler avec ça ! Mais dites-moi, lequel l'emporte ?"
-- Affirmations qui ne collent pas au contexte : Un ado de 15 ans qui parle de ses 30 ans d'expérience → "30 ans d'expérience à 15 ans ? Vous avez commencé avant de naître — quel dévouement ! Mais plus sérieusement..."
-- Justifications illogiques pendant le questionnaire : Si quelqu'un choisit une réponse et que son explication contredit son choix, relevez-le de manière joueuse.
-- Tout non-sens ou trolling en général : répondez avec de l'esprit, reconnaissez l'humour, puis redirigez vers la vraie question.
-
-COMMENT GÉRER :
-1. Toujours reconnaître ce qu'ils ont dit avec humour — ne jamais ignorer ou être froid.
-2. Pointer l'incohérence de manière joueuse et légère.
-3. Demander une clarification ou leur vraie réponse.
-4. Ne JAMAIS sauvegarder ou valider une information illogique/contradictoire sans l'avoir résolue d'abord.
-5. Si l'utilisateur confirme quelque chose qui semble contradictoire mais qui est en fait plausible (ex : un sexagénaire qui se sent jeune), acceptez-le avec grâce.
-
-RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS.
-
---- RÈGLE ABSOLUE : APPELS DE FONCTIONS ---
-
-N'écrivez et n'affichez JAMAIS la syntaxe d'un appel de fonction dans votre réponse textuelle (ex : `notify_top_2(...)`, `functions.save_answer(...)`, etc.). Les fonctions doivent être appelées UNIQUEMENT via l'interface d'outils, jamais mentionnées ou écrites dans le texte que vous dites à l'utilisateur."""
-
-    # Click-mode tools: signal the frontend to enable card click selection and mute the mic.
-    # Only added to the agent when input_mode == "click".
-    @function_tool()
-    async def request_top_2_click(question_id: int):
-        """CLICK MODE ONLY — Signals the frontend to mute the mic and enable click selection for the 2 favorite choices. Call this IMMEDIATELY before asking for the favorites. / MODE CLICK UNIQUEMENT — Signale au frontend de couper le micro et d'activer la sélection par clic pour les 2 choix préférés. Appelez cette fonction IMMÉDIATEMENT avant de demander les favoris."""
-        await send_state_update({
-            "type": "waiting_for_top_2",
-            "state": "questionnaire",
-            "question_id": question_id,
-        })
-        if is_en:
-            return f"Frontend notified: mic muted, waiting for user to click 2 favorite choices for question {question_id}."
-        return f"Frontend notifié : micro coupé, en attente du clic de l'utilisateur pour ses 2 choix préférés (question {question_id})."
-
-    @function_tool()
-    async def request_bottom_2_click(question_id: int):
-        """CLICK MODE ONLY — Signals the frontend to mute the mic and enable click selection for the 2 least liked choices. Call this IMMEDIATELY before asking for the least liked. / MODE CLICK UNIQUEMENT — Signale au frontend de couper le micro et d'activer la sélection par clic pour les 2 choix les moins aimés. Appelez cette fonction IMMÉDIATEMENT avant de demander les moins aimés."""
-        await send_state_update({
-            "type": "waiting_for_bottom_2",
-            "state": "questionnaire",
-            "question_id": question_id,
-        })
-        if is_en:
-            return f"Frontend notified: mic muted, waiting for user to click 2 least liked choices for question {question_id}."
-        return f"Frontend notifié : micro coupé, en attente du clic de l'utilisateur pour ses 2 choix les moins aimés (question {question_id})."
-
-    base_tools = [
+        @function_tool()
+        async def request_top_2_click(question_id: int):
+            """Signal the frontend to show the 'Reply' button for top 2 selection (click mode only). / Signale au frontend d'afficher le bouton 'Répondre' pour la sélection des 2 favoris (mode clic uniquement)."""
+            await send_state_update({
+                "type": "waiting_for_top_2",
+                "state": "questionnaire",
+                "question_id": question_id,
+            })
+            if is_en:
+                return "Frontend signaled: waiting for top 2 click."
+            return "Frontend signalé : attente du clic top 2."
+
+        @function_tool()
+        async def request_bottom_2_click(question_id: int):
+            """Signal the frontend to show the 'Reply' button for bottom 2 selection (click mode only). / Signale au frontend d'afficher le bouton 'Répondre' pour la sélection des 2 moins aimés (mode clic uniquement)."""
+            await send_state_update({
+                "type": "waiting_for_bottom_2",
+                "state": "questionnaire",
+                "question_id": question_id,
+            })
+            if is_en:
+                return "Frontend signaled: waiting for bottom 2 click."
+            return "Frontend signalé : attente du clic bottom 2."
+
+    # ─── Collecte des tools ────────────────────────────────────────────────
+
+    all_tools = [
         save_user_profile,
-        notify_asking_top_2, notify_top_2,
-        notify_justification_top_1, notify_justification_top_2,
+        notify_top_2,
+        notify_justification_top_2,
+        notify_bottom_2,
         notify_asking_bottom_2,
-        notify_justification_bottom_1, notify_justification_bottom_2,
+        notify_justification_bottom_2,
         notify_awaiting_confirmation,
-        save_answer,
+        notify_asking_top_2,
         notify_asking_intensity,
-        generate_formulas, select_formula, change_formula_type,
-        get_available_ingredients, replace_note, enter_pause_mode,
+        save_answer,
+        generate_formulas,
+        select_formula,
+        get_available_ingredients,
+        replace_note,
+        change_formula_type,
+        enter_pause_mode,
     ]
-    click_tools = [request_top_2_click, request_bottom_2_click] if input_mode == "click" else []
+    if input_mode == "click":
+        all_tools += [request_top_2_click, request_bottom_2_click]
 
-    agent = PausableAgent(
-        instructions=instructions,
-        tools=base_tools + click_tools,
-    )
+    # ─── Création de l'AgentSession ────────────────────────────────────────
 
-    # Create agent session with STT + LLM + TTS pipeline
+    logger.info(f"[AGENT_SESSION] Création AgentSession — STT=nova-3 LLM=gpt-4.1-mini TTS=sonic-3 voice={config.get('voice_id')} lang={config.get('language', 'fr')}")
+    initial_prompt = get_prompt(state, config, ai_name, is_en, input_mode)
+    agent = StatefulAgent(instructions=initial_prompt, tools=all_tools)
     session = AgentSession(
         stt=deepgram.STT(
             model="nova-3",
@@ -1039,84 +942,81 @@ N'écrivez et n'affichez JAMAIS la syntaxe d'un appel de fonction dans votre ré
             language=config.get("language", "fr"),
         ),
         vad=ctx.proc.userdata["vad"],
-        # Don't allow user to interrupt the agent while it speaks (voice)
         allow_interruptions=False,
     )
+    logger.info("[AGENT_SESSION] ✅ AgentSession créée")
+
+    # ─── Avatar Bey ────────────────────────────────────────────────────────
 
     if use_avatar[0]:
-        avatar_id = pick_avatar(voice_gender)
-        avatar = bey.AvatarSession(avatar_id=avatar_id)
-
-        # Start avatar BEFORE session.start() so that output.audio is already set to
-        # DataStreamAudioOutput when session.start() runs. This prevents session.start()
-        # from creating a RoomIO audio track in parallel, which would cause the greeting
-        # to be played twice (once via RoomIO, once via the avatar DataStream).
         try:
+            avatar_id = pick_avatar(voice_gender)
+            logger.info(f"[AVATAR] Démarrage avatar Bey — avatar_id={avatar_id} gender={voice_gender}")
+            avatar = bey.AvatarSession(avatar_id=avatar_id)
             await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=15.0)
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"Avatar start failed or timed out, proceeding without avatar: {e}")
+            logger.info("[AVATAR] ✅ Avatar Bey démarré")
+        except asyncio.TimeoutError:
+            logger.error("[AVATAR] ❌ Timeout (15s) démarrage avatar Bey — on continue sans avatar")
+            use_avatar[0] = False
+            asyncio.ensure_future(send_state_update({"type": "avatar_disabled", "reason": "timeout"}))
+        except Exception as e:
+            logger.error(f"[AVATAR] ❌ Erreur démarrage avatar Bey ({type(e).__name__}: {e}) — on continue sans avatar")
+            use_avatar[0] = False
+            asyncio.ensure_future(send_state_update({"type": "avatar_disabled", "reason": "error"}))
 
-        # Wait for the Bey avatar to join the room and publish its video track BEFORE
-        # starting the session. If session.start() is called first, the user could speak
-        # during the Bey warm-up window (~5s), triggering an LLM reply whose TTS audio
-        # frames would be dropped (DataStreamAudioOutput discards frames until Bey's video
-        # track is ready), leaving the agent stuck in "thinking" state with no audio.
-        # Wait for Bey to be stably present with a video track for 3 consecutive checks
-        # (1.5s). Bey sometimes disconnects and reconnects right after its first join;
-        # breaking on the first detection causes generate_reply to run while Bey is
-        # mid-reconnect, which drops the audio frames and produces a silent greeting.
-        import time as _time
-        _BEY_IDENTITY = "bey-avatar-agent"
-        bey_stable_count = 0
-        print(f"[BEY_WAIT] Starting Bey stability check at {_time.time():.3f}")
-        for _i in range(50):  # up to 25s
-            bey_participant = next(
-                (p for p in ctx.room.remote_participants.values()
-                 if p.identity == _BEY_IDENTITY),
-                None,
-            )
-            if bey_participant and any(
-                pub.kind == rtc.TrackKind.KIND_VIDEO
-                for pub in bey_participant.track_publications.values()
-            ):
-                bey_stable_count += 1
-                print(f"[BEY_WAIT] Bey stable_count={bey_stable_count}/3 at {_time.time():.3f}")
-                if bey_stable_count >= 3:  # stable for 1.5s
-                    print(f"[BEY_WAIT] Bey stable! Proceeding. at {_time.time():.3f}")
-                    break
+        if use_avatar[0]:
+            import time as _time
+            _BEY_IDENTITY = "bey-avatar-agent"
+            bey_stable_count = 0
+            logger.info(f"[BEY_WAIT] Attente stabilité Bey at {_time.time():.3f}")
+            for _i in range(50):
+                bey_participant = next(
+                    (p for p in ctx.room.remote_participants.values()
+                     if p.identity == _BEY_IDENTITY),
+                    None,
+                )
+                if bey_participant and any(
+                    pub.kind == rtc.TrackKind.KIND_VIDEO
+                    for pub in bey_participant.track_publications.values()
+                ):
+                    bey_stable_count += 1
+                    logger.debug(f"[BEY_WAIT] stable_count={bey_stable_count}/3 at {_time.time():.3f}")
+                    if bey_stable_count >= 3:
+                        logger.info(f"[BEY_WAIT] ✅ Bey stable at {_time.time():.3f}")
+                        break
+                else:
+                    if bey_stable_count > 0:
+                        logger.warning(f"[BEY_WAIT] Bey lost track, reset stable_count at {_time.time():.3f}")
+                    bey_stable_count = 0
+                await asyncio.sleep(0.5)
             else:
-                if bey_stable_count > 0:
-                    print(f"[BEY_WAIT] Bey lost track, resetting stable_count at {_time.time():.3f}")
-                bey_stable_count = 0
-            await asyncio.sleep(0.5)
-        else:
-            print(f"[BEY_WAIT] Bey avatar not ready for room {ctx.room.name} after 25s, proceeding anyway at {_time.time():.3f}")
+                logger.warning(f"[BEY_WAIT] Bey pas prêt après 25s, on continue quand même at {_time.time():.3f}")
 
-        # Extra delay to let Cartesia TTS WebSocket + Bey DataStream fully initialise
-        # before generate_reply() fires the first greeting audio.
-        print(f"[SESSION] Waiting 1.5s for Cartesia + Bey DataStream to be ready at {_time.time():.3f}")
-        await asyncio.sleep(1.5)
-        print(f"[SESSION] Extra wait done at {_time.time():.3f}")
+            logger.info(f"[SESSION] Attente 1.5s Cartesia + Bey DataStream at {_time.time():.3f}")
+            await asyncio.sleep(1.5)
+            logger.info(f"[SESSION] Attente terminée at {_time.time():.3f}")
+
+    # ─── Démarrage de la session ───────────────────────────────────────────
 
     import time as _time
-    # Connect agent to room only after Bey is stable, so no user speech can trigger
-    # a TTS response before the avatar's DataStream output is ready.
-    print(f"[SESSION] Calling session.start() at {_time.time():.3f}")
-    await session.start(
-        room=ctx.room,
-        agent=agent,
-    )
-    print(f"[SESSION] session.start() returned at {_time.time():.3f}")
+    logger.info(f"[SESSION] Appel session.start() at {_time.time():.3f}")
+    try:
+        await session.start(room=ctx.room, agent=agent)
+        logger.info(f"[SESSION] ✅ session.start() terminé at {_time.time():.3f}")
+    except Exception as e:
+        logger.exception(f"[SESSION] ❌ Erreur session.start(): {e}")
+        await http.aclose()
+        return
 
-    # Notify the frontend of the agent's speaking state so it can show/hide the mic button
+    # ─── Event listeners ──────────────────────────────────────────────────
+
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
         asyncio.ensure_future(send_state_update({
             "type": "agent_state",
-            "state": ev.new_state,  # "initializing" | "listening" | "thinking" | "speaking" | "idle"
+            "state": ev.new_state,
         }))
 
-    # Listen for control messages from the frontend (resume button, click-mode choices)
     def _on_data_received(data_packet):
         try:
             msg = json.loads(data_packet.data.decode("utf-8"))
@@ -1127,67 +1027,74 @@ N'écrivez et n'affichez JAMAIS la syntaxe d'un appel de fonction dans votre ré
                 try:
                     session.interrupt(force=True)
                 except Exception as e:
-                    print(f"[INTERRUPT] Could not interrupt speech: {e}")
+                    logger.warning(f"[INTERRUPT] Could not interrupt speech: {e}")
                 session.input.set_audio_enabled(False)
-                print(f"Agent interrupted by user for room: {ctx.room.name}")
+                logger.info(f"[INTERRUPT] Agent interrompu pour room={ctx.room.name}")
 
             elif msg_type == "resume_listen" and user_interrupted[0]:
                 user_interrupted[0] = False
                 session.input.set_audio_enabled(True)
-                print(f"Agent back to listening after user interrupt for room: {ctx.room.name}")
+                logger.info(f"[INTERRUPT] Reprise écoute pour room={ctx.room.name}")
 
             elif msg_type == "repeat":
-                pass  # TODO: implement repeat
+                pass  # TODO
 
             elif msg_type == "resume" and paused[0]:
                 paused[0] = False
+                state.phase = AgentPhase.STANDBY
                 session.input.set_audio_enabled(True)
-                print(f"Agent resumed via frontend button for room: {ctx.room.name}")
+                logger.info(f"[RESUME] Agent réactivé via bouton pour room={ctx.room.name}")
                 if is_en:
-                    resume_prompt = "The user just clicked a button to resume the conversation. Do NOT say hello or re-introduce yourself. Simply say something like 'I'm listening, what's your question?' or 'Go ahead, I'm here.' Be brief and natural."
+                    resume_prompt = "The user just clicked the button to resume. Do NOT re-introduce yourself. Simply say 'I'm all ears, what's your question?' Be brief and natural."
                 else:
-                    resume_prompt = "L'utilisateur vient de cliquer sur un bouton pour reprendre la conversation. Ne dites surtout pas bonjour et ne vous présentez pas à nouveau. Dites simplement quelque chose comme 'Je vous écoute, quelle est votre question ?' ou 'Allez-y, je suis là.' Soyez bref(ve) et naturel(le)."
+                    resume_prompt = "L'utilisateur vient de cliquer sur le bouton pour reprendre. Ne vous présentez pas à nouveau. Dites simplement 'Je vous écoute, quelle est votre question ?' Soyez bref(ve) et naturel(le)."
                 asyncio.ensure_future(session.generate_reply(instructions=resume_prompt))
 
-
         except Exception as e:
-            print(f"[DATA_RECEIVED] Error handling message: {e}")
+            logger.error(f"[DATA_RECEIVED] Erreur traitement message: {e}")
 
     ctx.room.on("data_received", _on_data_received)
 
-    # Gracefully disable the avatar if Bey disconnects mid-session (e.g. out of credits)
-    # instead of crashing — the session continues in audio-only mode.
     def _on_participant_disconnected(participant):
         if participant.identity == "bey-avatar-agent" and use_avatar[0]:
             use_avatar[0] = False
-            print(f"[AVATAR] Bey avatar disconnected (out of credits?), switching to audio-only mode for room {ctx.room.name}")
+            logger.warning(f"[AVATAR] Bey déconnecté, passage en mode audio-only pour room={ctx.room.name}")
             asyncio.ensure_future(send_state_update({"type": "avatar_disabled"}))
 
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
-    # Start with the introduction phase (collect user profile before questionnaire)
-    if config.get("language", "fr") == "fr":
-        greeting = f"Saluez l'utilisateur chaleureusement et simplement en le vouvoyant. Présentez-vous juste avec votre prénom ({ai_name}), sans mentionner Lilo, Le Studio des Parfums, ni que vous êtes une assistante vocale. Par exemple : 'Bonjour ! Moi c'est {ai_name}, enchantée ! Et vous, comment vous appelez-vous ?' Soyez naturel(le) et souriant(e)."
-    else:
-        greeting = f"Greet the user warmly and simply. Introduce yourself just with your first name ({ai_name}), without mentioning Lilo, Le Studio des Parfums, or that you are a voice assistant. For example: 'Hey, hi! I'm {ai_name}, nice to meet you! And what's your name?' Be natural and friendly."
+    # ─── Démarrage : accueil ──────────────────────────────────────────────
 
-    print(f"[GREETING] Calling generate_reply() at {_time.time():.3f}")
-    await session.generate_reply(instructions=greeting)
-    print(f"[GREETING] generate_reply() returned at {_time.time():.3f}")
+    logger.info(f"[GREETING] Appel generate_reply() — phase={state.phase.name} at {_time.time():.3f}")
+    try:
+        await session.generate_reply(instructions=initial_prompt)
+        logger.info(f"[GREETING] ✅ generate_reply() terminé at {_time.time():.3f}")
+    except Exception as e:
+        logger.exception(f"[GREETING] ❌ Erreur generate_reply(): {e}")
 
-    # Cleanup when the job shuts down (user disconnects or room closes)
     async def _on_shutdown():
         await http.aclose()
-        print(f"Agent session ended for room: {ctx.room.name}")
+        logger.info(f"[SHUTDOWN] Session terminée pour room={ctx.room.name}")
 
     ctx.add_shutdown_callback(_on_shutdown)
+    logger.info(f"[ENTRYPOINT] ✅ Agent actif — room={ctx.room.name} phase={state.phase.name}")
 
+
+# ─────────────────────────────────────────────
+# Prewarm & Worker
+# ─────────────────────────────────────────────
 
 def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load(
-        min_speech_duration=0.3,
-        min_silence_duration=1.5,
-    )
+    logger.info(f"[PREWARM] Démarrage prewarm — PID={os.getpid()}")
+    try:
+        proc.userdata["vad"] = silero.VAD.load(
+            min_speech_duration=0.3,
+            min_silence_duration=1.5,
+        )
+        logger.info("[PREWARM] ✅ Silero VAD chargé")
+    except Exception as e:
+        logger.exception(f"[PREWARM] ❌ ERREUR chargement Silero VAD: {e}")
+        raise
 
 
 if __name__ == "__main__":
@@ -1196,7 +1103,7 @@ if __name__ == "__main__":
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
             agent_name="lylo",
-            num_idle_processes=2,
+            num_idle_processes=3,
             load_threshold=0.9,
         )
     )

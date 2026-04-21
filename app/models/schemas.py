@@ -53,3 +53,25 @@ class ReplaceNoteRequest(BaseModel):
 
 class SendMailRequest(BaseModel):
     to: str
+
+
+class BatchAnswerItem(BaseModel):
+    question_id: int
+    question_text: str
+    top_2: list[str]
+    bottom_2: list[str]
+
+
+class BatchGenerateRequest(BaseModel):
+    language: Literal["fr", "en"] = "fr"
+    gender: str
+    age: str
+    has_allergies: Literal["oui", "non"] = "non"
+    allergies: str | None = None
+    answers: list[BatchAnswerItem]
+
+
+class SendFormulaMailRequest(BaseModel):
+    email: str
+    language: Literal["fr", "en"] = "fr"
+    formula: dict

@@ -410,3 +410,45 @@ def send_mail(to_email: str, session_id: str, formula: dict) -> None:
         server.starttls()
         server.login(settings.smtp_user, settings.smtp_password)
         server.sendmail(msg["From"], to_email, msg.as_string())
+
+
+def send_formula_mail_stateless(to_email: str, formula: dict, language: str = "fr") -> None:
+    """Envoie le mail de formule sans session — pour le mode batch."""
+    settings = get_settings()
+    if not settings.smtp_host or not settings.smtp_user:
+        raise RuntimeError("SMTP is not configured")
+
+    labels = _LABELS.get(language, _LABELS["fr"])
+    notes_30ml = formula.get("sizes", {}).get("30ml", {})
+    html = _build_formula_html(
+        profile=formula.get("profile", ""),
+        description=formula.get("description", ""),
+        notes_30ml=notes_30ml,
+        language=language,
+        image_base_url=settings.backend_url,
+    )
+
+    msg = MIMEText(html, "html", "utf-8")
+    msg["Subject"] = labels["subject"]
+    msg["From"] = settings.smtp_from or settings.smtp_user
+    msg["To"] = to_email
+
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+        server.starttls()
+        server.login(settings.smtp_user, settings.smtp_password)
+        server.sendmail(msg["From"], to_email, msg.as_string())
+
+    internal_email = settings.internal_email
+    if not internal_email:
+        return
+    for email in [e.strip() for e in internal_email.split(",") if e.strip()]:
+        html_internal = _build_internal_html(formula)
+        profile = formula.get("profile", "formule")
+        msg_int = MIMEText(html_internal, "html", "utf-8")
+        msg_int["Subject"] = f"[Lylo Interne] {profile} — Fiche complète"
+        msg_int["From"] = settings.smtp_from or settings.smtp_user
+        msg_int["To"] = email
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as srv:
+            srv.starttls()
+            srv.login(settings.smtp_user, settings.smtp_password)
+            srv.sendmail(msg_int["From"], email, msg_int.as_string())
